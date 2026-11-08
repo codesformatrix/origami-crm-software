@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "origami-crm",
+  "compatibility_date": "2026-05-03",
+  "pages_build_output_dir": ".",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "origami-crm",
+      "database_id": "b48ffa68-7161-4458-9ddb-220fdb3bfced"
+    }
+  ]
+}

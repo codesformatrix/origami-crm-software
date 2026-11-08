@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OrigamiOutreach</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%235B4BE2'/><text y='.72em' x='.5em' font-size='58' fill='white' font-family='sans-serif' font-weight='bold'>O</text></svg>">
+</head><body>
+
+<div class="shell">
+  <!-- ------------------------------------------------------------ sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">O</div>
+      <div>
+        <div class="brand-name">OrigamiOutreach</div>
+        <div class="brand-sub">Outreach CRM</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <div class="nav-label">Work</div>
+      <a class="navitem" data-nav="/jarvis" href="#/jarvis">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg>
+        Jarvis <span class="count" data-count="sendNow">0</span>
+      </a>
+      <a class="navitem" data-nav="/tasks" href="#/tasks">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        Tasks <span class="count" data-count="tasks">0</span>
+      </a>
+      <a class="navitem" data-nav="/pipeline" href="#/pipeline">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="18" rx="1.5"/><rect x="11" y="3" width="6" height="12" rx="1.5"/><rect x="19" y="3" width="2" height="8" rx="1"/></svg>
+        Pipeline <span class="count" data-count="pipeline">0</span>
+      </a>
+      <a class="navitem" data-nav="/sequences" href="#/sequences">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h10M4 12h7M4 18h13"/><circle cx="18" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="20" cy="18" r="2"/></svg>
+        Sequence Builder
+      </a>
+      <a class="navitem" data-nav="/sequence-health" href="#/sequence-health">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 8 0 111.8 5.1"/><path d="M4 17v-5h5M12 7v5l3 2"/></svg>
+        Sequence Health
+      </a>
+      <a class="navitem" data-nav="/projects" href="#/projects">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="8" height="7" rx="1.5"/><rect x="13" y="4" width="8" height="7" rx="1.5"/><rect x="3" y="13" width="8" height="7" rx="1.5"/><rect x="13" y="13" width="8" height="7" rx="1.5"/></svg>
+        Outreach projects
+      </a>
+
+      <a class="navitem" data-nav="/research" href="#/research">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M8 10h5M10.5 7.5v5"/></svg>
+        Research
+      </a>
+      <a class="navitem" data-nav="/copywriting" href="#/copywriting">
+        <span class="ico">✎</span><span>Copywriting</span>
+      </a>
+      <a class="navitem" data-nav="/inbox" href="#/inbox">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 8 9 6 9-6M7 17h3"/></svg>
+        Inbox / Replies
+      </a>
+
+      <div class="nav-label">Records</div>
+      <a class="navitem" data-nav="/people" href="#/people">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/></svg>
+        Prospects <span class="count" data-count="people">0</span>
+      </a>
+      <a class="navitem" data-nav="/companies" href="#/companies">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 21h18M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/></svg>
+        Companies <span class="count" data-count="companies">0</span>
+      </a>
+      <a class="navitem" data-nav="/templates" href="#/templates">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+        Templates
+      </a>
+
+      <div class="nav-label">Insight</div>
+      <a class="navitem" data-nav="/analytics" href="#/analytics">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+        Analytics
+      </a>
+      <a class="navitem" data-nav="/settings" href="#/settings">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2 2 2 0 11-4 0 1.7 1.7 0 00-2.9-1.2l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 15a2 2 0 010-4 1.7 1.7 0 001.2-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 4.2a2 2 0 014 0 1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1A1.7 1.7 0 0021 11a2 2 0 010 4z"/></svg>
+        Settings
+      </a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="who">
+        <div class="av">OC</div>
+        <div class="tx">
+          <b>Origami Consulting</b>
+          <span id="clock">—</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- --------------------------------------------------------------- main -->
+  <div class="main">
+    <header class="topbar">
+      <button class="iconbtn hamburger" id="burger" aria-label="Menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <div>
+        <h1 id="pageTitle">Jarvis</h1>
+      </div>
+      <div class="sp"></div>
+      <div class="searchbox">
+        <svg class="s-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="globalsearch" placeholder="Search companies, people…" autocomplete="off">
+        <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%)" class="kbd">⌘K</span>
+      </div>
+      <button class="btn pri" id="quickadd">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="hide-sm">New company</span>
+      </button>
+    </header>
+
+    <div class="content">
+      <div id="app"><div class="spin">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------- command palette -->
+<div id="palette-root"></div>
+
+<!-- ------------------------------------------------------------ quick add -->
+<div id="modal-root"></div>
+
+<div id="toast"></div>
+<script src="/static/vendor/exceljs.min.js"></script>
+<script src="/static/xlsx-import.js"></script>
+<script src="/static/app.js"></script>
+</body></html>

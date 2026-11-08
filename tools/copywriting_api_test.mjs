@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+const base=(process.argv[2]||'http://127.0.0.1:8788').replace(/\/$/,''); const password=process.env.CRM_TEST_PASSWORD; assert.ok(password,'set CRM_TEST_PASSWORD to the local APP_KEY'); let cookie='';
+async function req(path,method='GET',body){const r=await fetch(base+path,{method,headers:{...(body===undefined?{}:{'content-type':'application/json'}),...(cookie?{cookie}:{})},body:body===undefined?undefined:JSON.stringify(body),redirect:'manual'});const sc=r.headers.get('set-cookie');if(sc)cookie=sc.split(';')[0];const t=await r.text();let d={};try{d=JSON.parse(t)}catch{}return {r,d};}
+const login=await req('/api/login','POST',{key:password}); assert.equal(login.r.status,200);
+const prospect=await req('/api/prospects','POST',{name:'Copywriting API Fixture',email:'copywriting-api-fixture@example.test',company:'Copywriting API Company',domain:'copywriting-api.example.test',title:'CTO'});assert.equal(prospect.r.status,200,JSON.stringify(prospect.d));
+const note=await req('/api/research','POST',{contact_id:prospect.d.id,source_type:'website',source_url:'https://copywriting-api.example.test/news',summary:'The company publicly announced new reliability roles and product analytics work.',pain_points:['Release reliability is a stated focus'],talking_points:['New platform reliability roles','Product analytics work']});assert.equal(note.r.status,200,JSON.stringify(note.d));assert.equal(note.d.copywriting_status,'queued');
+const detail=await req(`/api/contacts/${prospect.d.id}`);assert.equal(detail.r.status,200);assert.equal(detail.d.copywriting.status,'queued');assert.equal(detail.d.email_drafts.length,0);assert.equal(detail.d.copywriting.unsubscribe_url.includes('/api/track/u/'),true);
+const queue=await req('/api/copywriting');assert.equal(queue.r.status,200);assert.ok(queue.d.jobs.some((j)=>j.contact_id===prospect.d.id&&j.status==='queued'));
+const listed=await req(`/api/contacts/${prospect.d.id}/copywriting`);assert.equal(listed.r.status,200);assert.equal(listed.d.job.status,'queued');
+await req(`/api/contacts/${prospect.d.id}`,'DELETE');await req(`/api/companies/${prospect.d.company_id}`,'DELETE');await req('/api/logout','POST',{});
+console.log('PASS local copywriting queue and API persistence smoke test');

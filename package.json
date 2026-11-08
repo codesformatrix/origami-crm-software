@@ -1,0 +1,43 @@
+{
+  "name": "origami-crm",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler pages dev . --ip 0.0.0.0 --port 8788 --persist-to .wrangler/state",
+    "test:syntax": "node --check 'functions/api/[[path]].js' && for f in functions/lib/*.js static/*.js static/vendor/*.js tools/*.mjs workers-enrichment.js; do node --check \"$f\" || exit 1; done", 
+    "test:dom": "node tools/dom_test.mjs http://127.0.0.1:8788",
+    "test:security": "node tools/security_test.mjs http://127.0.0.1:8788",
+    "test:xlsx": "node tools/xlsx_test.mjs",
+    "test:segments": "node tools/segments_test.mjs http://127.0.0.1:8788",
+    "test:projects": "node tools/projects_test.mjs http://127.0.0.1:8788",
+    "test:phase0": "node tools/phase0_test.mjs http://127.0.0.1:8788",
+    "test:llm": "node tools/llm_test.mjs",
+    "test:phase1": "node tools/phase1_unit_test.mjs",
+    "test:phase1-api": "node tools/phase1_api_test.mjs",
+    "test:copywriting": "node tools/copywriting_test.mjs",
+    "test:copywriting-api": "node tools/copywriting_api_test.mjs",
+    "test:gmail": "node tools/gmail_test.mjs",
+    "test:sequence-health": "node tools/sequence_health_test.mjs",
+    "test:migration11": "node tools/migration11_test.mjs",
+    "test:migration12": "node tools/migration12_test.mjs",
+    "test:reply-detection": "node tools/reply_detection_test.mjs",
+    "test:reply-api": "node tools/reply_api_test.mjs",
+    "test:dashboard": "node tools/dashboard_api_test.mjs",
+    "test:migration13": "node tools/migration13_test.mjs",
+    "test:compliance": "node tools/compliance_test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3",
+    "wrangler": "^4.86.0"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
