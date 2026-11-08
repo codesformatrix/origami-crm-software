@@ -101,6 +101,10 @@ Email 1 is constrained to under 120 words, short lowercase subject, a research-b
 
 The contact page has an editable form for each email. Saving runs a fresh score and persists the edit. Scheduling requires Gmail to be connected and places the four reviewed drafts into the automatic-send queue; eligible messages may be sent by the 10-minute worker during the configured local window. Reply, suppression, unsubscribe, and reconnect-pause controls take precedence. AI output is not described as literally human-written: it is plain-language AI-generated copy that requires human review. It is not guaranteed to meet legal or deliverability requirements.
 
+### Per-step regeneration with the latest research
+
+Drafts are generated once per sequence, but any email can be rewritten on demand with the **latest** research note. After a send, new posts, news, or pages pasted into the prospect detail page become the newest research note; clicking **Regenerate with latest research** on the next email (before its cadence send date) rewrites it from the fresh context while keeping the shared Gmail thread subject and the already-sent emails as reference. This lets each follow-up pick up context that appeared between sends. Regenerated drafts re-run the scoring pass and a single revision if below 70, and the worker sends the rewritten body at the scheduled time. Sent drafts stay locked; a reply, bounce, or unsubscribe still stops the sequence.
+
 Copywriting has a separate configurable hourly job cap in Settings (default 10). LLM provider quotas are counted per model request using the existing settings ledger. Set `PUBLIC_APP_URL` to the Pages origin in `wrangler.enrichment.toml`; without a valid public origin the system will not generate drafts missing a working unsubscribe link. The worker and Pages app must use the same verified D1 database and the worker must have the same LLM provider secrets. No remote migration or deployment was run for this phase.
 
 ## Phase 3 — Gmail OAuth, reply detection and scheduled delivery
