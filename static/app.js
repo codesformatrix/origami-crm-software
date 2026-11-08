@@ -573,7 +573,7 @@ async function renderContact(id) {
   const copyDrafts = d.email_drafts || [];
   const allCopyDraftsReady = copyDrafts.length === 4 && copyDrafts.every((x) => Number(x.personalization_score) >= 70 && Number(x.constraints_valid) === 1);
   const copywritingPanel = `<div class="panel" id="copywriting"><div class="row"><h3 style="margin:0">Prewritten email sequence</h3><span class="sp"></span>${d.copywriting ? badge(d.copywriting.status === 'ready' ? 'replied' : d.copywriting.status === 'needs_review' ? 'due' : 'plain', esc(d.copywriting.status)) : ''}</div>
-    <p class="small muted">AI-generated drafts based on saved research. Review and edit every email. Regenerate any email with the latest research between sends: after a send, paste new posts or news into the research panel, then regenerate the next email before its cadence send date. Nothing sends until you connect Gmail and explicitly schedule the sequence.</p>
+    <p class="small muted">AI-generated drafts based on saved research. Review and edit every email. Each email is automatically rewritten with the latest research 6 to 12 hours before it sends — paste new posts or news into the research panel anytime and the pre-send refresh picks them up. Nothing sends until you connect Gmail and explicitly schedule the sequence.</p>
     ${d.copywriting ? `<p class="small muted">${esc(d.copywriting.detail || '')}${d.copywriting.error ? ` · ${esc(d.copywriting.error)}` : ''}</p>` : ''}
     ${!copyDrafts.length ? `<div class="row">${!d.copywriting || ['needs_configuration','failed','completed'].includes(d.copywriting.status) ? `<button class="btn sm" id="queuecopy">Queue four drafts</button>` : ''}${d.copywriting?.status === 'queued' ? `<button class="btn pri sm" id="runcopy">Generate now</button>` : ''}<span id="copywritingmsg" class="small muted"></span></div>` : ''}
     ${copyDrafts.map((draft) => { let breakdown = {}; try { breakdown = JSON.parse(draft.score_breakdown || '{}'); } catch {} return `<form class="card pad-sm mb copy-draft" data-draft-id="${draft.id}" style="box-shadow:none"><div class="row"><b>Email ${draft.step_number}${draft.step_number === 4 ? ' · breakup' : ''}</b><span class="sp"></span>${badge(Number(draft.personalization_score) >= 70 && Number(draft.constraints_valid) === 1 ? 'replied' : 'due', `Score ${draft.personalization_score ?? 'not scored'}/100`)}</div>
@@ -582,7 +582,7 @@ async function renderContact(id) {
       <div class="small muted">${Number(draft.word_count || 0)} words · ${draft.constraints_valid ? 'copy rules pass' : 'copy rules need attention'}${draft.is_user_edited ? ' · edited' : ''}</div>
       ${draft.score_critique ? `<p class="small" style="margin:6px 0">${esc(draft.score_critique)}</p>` : ''}
       <details class="small muted"><summary>Score breakdown</summary><p>Personalization ${breakdown.personalization_depth ?? '—'} · CTA ${breakdown.cta_clarity ?? '—'} · Subject ${breakdown.subject_line_strength ?? '—'} · Spam safety ${breakdown.spam_safety ?? '—'}</p></details>
-      <div class="row mt">${draft.status === 'sent' ? '<span class="small muted">Logged as sent. This draft is locked.</span>' : '<button class="btn sm" type="submit">Save and rescore</button>'}${draft.status !== 'sent' ? `<button class="btn sm" type="button" data-regen="${draft.step_number}">Regenerate with latest research</button>` : ''}<span class="small muted" data-draft-message></span></div></form>`; }).join('')}
+      <div class="row mt">${draft.status === 'sent' ? '<span class="small muted">Logged as sent. This draft is locked.</span>' : '<button class="btn sm" type="submit">Save and rescore</button>'}<span class="small muted" data-draft-message></span></div></form>`; }).join('')}
     ${copyDrafts.length === 4 && d.copywriting?.status !== 'sent' ? `<div class="f"><div><label>Sequence cadence</label><select id="copy-sequence" ${d.copywriting?.status === 'scheduled' ? 'disabled' : ''}><option value="" ${!d.copywriting?.sequence_id && !d.active_enrollment ? 'selected' : ''}>Default · 3, 4, 5 business days</option>${availableSequences.map((sq)=>{const activeRows=sq.steps.filter(st=>st.active===undefined||Number(st.active)!==0);const activeSteps=activeRows.length;const emailReady=[1,2,3,4].every(n=>activeRows.some(st=>Number(st.step_order)===n&&String(st.channel).toLowerCase()==='email'));return `<option value="${sq.id}" ${(Number(d.copywriting?.sequence_id || d.active_enrollment?.sequence_id)===Number(sq.id))?'selected':''} ${!sq.active||!emailReady?'disabled':''}>${esc(sq.name)} · ${activeSteps} active steps${emailReady?'':' · needs four email steps'}${sq.active?'':' · paused'}</option>`}).join('')}</select></div></div><div class="row"><button class="btn pri" id="schedulecopy" ${allCopyDraftsReady && d.gmail?.status === 'connected' && !['scheduled','paused_auth','paused_reply','paused_domain','paused_sequence','paused_config','paused_timezone','suppressed','bounced','cancelled'].includes(d.copywriting?.status) ? '' : 'disabled'}>${d.copywriting?.status === 'scheduled' ? 'Scheduled for Gmail' : 'Schedule automatic sequence'}</button><span class="small muted">${d.copywriting?.status === 'paused_auth' ? 'Sending is paused. Reconnect Gmail, then resume paused sends in Settings.' : d.copywriting?.status === 'paused_reply' ? 'A reply was detected. This prospect’s follow-ups are paused.' : allCopyDraftsReady ? (d.gmail?.status === 'connected' ? 'Step 1 is day 0. Follow-ups use business-day delays and the 9 to 11 local window, Monday through Thursday.' : 'Connect Gmail in Settings before scheduling automatic delivery.') : 'Every draft must score at least 70 and pass the copy rules.'}</span></div>` : ''}
   </div>`;
 
@@ -595,11 +595,11 @@ async function renderContact(id) {
       ${c.last_touch ? '· last ' + esc(c.last_touch) : ''}</p>
 
     <p class="muted" style="margin:-6px 0 12px">
-      ${co.timezone
-        ? `Their time: <b>${planItem && planItem.local ? esc(planItem.local.weekday + ' ' + planItem.local.time) : esc(co.timezone)}</b>
-           <span class="muted">· ${esc(tzCity(co.timezone))}${co.country ? ', ' + esc(co.country) : ''}</span>
+      ${c.timezone || co.timezone
+        ? `Their time: <b>${planItem && planItem.local ? esc(planItem.local.weekday + ' ' + planItem.local.time) : esc(c.timezone || co.timezone)}</b>
+           <span class="muted">· ${esc(tzCity(c.timezone || co.timezone))}${c.country || co.country ? ', ' + esc(c.country || co.country) : ''}</span>
            ${windowBadge(planItem && planItem.window)}`
-        : '<span class="muted">No timezone detected for this company — add one on the company page.</span>'}
+        : '<span class="muted">No timezone detected — the AI will detect it automatically from research, or you can detect it now.</span> ' + `<button class="btn sm" id="detecttz">Detect timezone now</button>`}
     </p>
 
     <div class="row" style="margin-bottom:18px">
@@ -615,6 +615,10 @@ async function renderContact(id) {
       ${d.enrichment ? `<div class="bar" style="height:7px"><i style="width:${Math.max(0,Math.min(100,d.enrichment.progress || 0))}%"></i></div>` : ''}
       ${(!d.enrichment || ['needs_configuration','failed','completed'].includes(d.enrichment?.status)) ? '<button class="btn sm mt" id="queueprospect">Queue / retry enrichment</button>' : ''}
       <p class="small muted">Company research uses public homepage/about/blog pages and public search. No LinkedIn URL is ever fetched.</p>
+    </div>
+    <div class="panel"><h3>Timezone detection</h3>
+      <p class="muted" style="margin-top:0">${d.timezone_job ? `<b>${esc(d.timezone_job.status)}</b> · ${esc(d.timezone_job.detail || d.timezone_job.error || 'queued for detection')}${d.timezone_job.finished_at ? ' · ' + esc(d.timezone_job.finished_at) : ''}` : (c.timezone ? '<b>set</b> · ' + esc(c.timezone) : '<span class="muted">Not queued yet.</span>')}${c.timezone ? ' ' + `<button class="btn sm" id="detecttz2">Re-detect</button>` : ''}</p>
+      <p class="small muted">Detection uses uploaded data first, then AI inference, then deep web research of the company website and search results. The detected timezone sets outreach windows and gives the email AI local context.</p>
     </div>
 
     <div class="panel"><h3>LinkedIn post intel — manual input only</h3>
@@ -746,17 +750,6 @@ async function renderContact(id) {
   const runCopy = document.getElementById('runcopy');
   if (runCopy) runCopy.onclick = async () => { runCopy.disabled = true; runCopy.textContent = 'Generating…'; try { await post('copywriting/run', {}); toast('Copywriting finished'); route(); } catch (err) { toast(err.message); runCopy.disabled = false; } };
   appEl.querySelectorAll('.copy-draft').forEach((form) => { form.onsubmit = async (e) => { e.preventDefault(); const button = form.querySelector('button[type=submit]'); const msg = form.querySelector('[data-draft-message]'); button.disabled = true; msg.textContent = 'Saving and rescoring…'; try { await put('email-drafts/' + form.dataset.draftId, formObject(form)); toast('Draft saved and rescored'); route(); } catch (err) { msg.textContent = err.message; button.disabled = false; } }; });
-  appEl.querySelectorAll('[data-regen]').forEach((btn) => {
-    btn.onclick = async () => {
-      const step = Number(btn.dataset.regen);
-      btn.disabled = true; btn.textContent = 'Regenerating with AI…';
-      try {
-        const res = await post(`contacts/${id}/email-drafts/regenerate`, { step_number: step });
-        toast(res.needs_review ? `Email ${step} regenerated but needs your review` : `Email ${step} regenerated with the latest research`);
-        route();
-      } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = 'Regenerate with latest research'; }
-    };
-  });
   const scheduleCopy = document.getElementById('schedulecopy');
   if (scheduleCopy && !scheduleCopy.disabled && d.copywriting?.status !== 'scheduled') scheduleCopy.onclick = async () => { scheduleCopy.disabled = true; const sequenceId=Number(document.getElementById('copy-sequence')?.value)||null; try { await post(`contacts/${id}/copywriting/schedule`, { sequence_id:sequenceId, use_default:!sequenceId }); toast('Sequence added to the Gmail queue with business-day scheduling.'); route(); } catch (err) { toast(err.message); scheduleCopy.disabled = false; } };
   document.getElementById('linkedinintel').onsubmit = async (e) => {
@@ -767,6 +760,11 @@ async function renderContact(id) {
   };
   const queueButton = document.getElementById('queueprospect');
   if (queueButton) queueButton.onclick = async () => { await post('contacts/' + id + '/enrich', {}); toast('Queued for enrichment'); route(); };
+  const detectTz = () => { const el = document.getElementById('detecttz') || document.getElementById('detecttz2'); if (!el) return; el.disabled = true; el.textContent = 'Detecting…'; post(`contacts/${id}/timezone`, { run_now: true }).then((res) => { toast(`Timezone ${res.timezone ? 'detected: ' + res.timezone : 'not detected'}`); route(); }).catch((err) => { toast(err.message); el.disabled = false; el.textContent = 'Detect timezone now'; }); };
+  const detectTzBtn = document.getElementById('detecttz');
+  if (detectTzBtn) detectTzBtn.onclick = detectTz;
+  const detectTz2 = document.getElementById('detecttz2');
+  if (detectTz2) detectTz2.onclick = detectTz;
 
   // pre-fill Jarvis's suggestion
   let activeTemplateId = null;

@@ -68,7 +68,7 @@ If it says the project already exists (from an older setup), skip this step.
 npx wrangler d1 execute origami-crm --file=schema.sql --remote --yes
 ```
 
-This creates all 34 tables in the cloud database. (Migrations are NOT needed for a fresh database.)
+This creates all 34 tables in the cloud database. (Migrations are NOT needed for a fresh database. If you already deployed an older database, apply the incremental migration with `npx wrangler d1 execute origami-crm --file=migrate14.sql --remote --yes` — it adds the `timezone_jobs` table used by automatic pre-send refresh and AI timezone detection.)
 
 ## Step 7 — Set the required secrets
 
@@ -84,6 +84,12 @@ npx wrangler pages secret put OPENROUTER_MODEL --project-name=origami-crm
 
 # Public app URL (replace with your pages.dev URL after deployment)
 npx wrangler pages secret put PUBLIC_APP_URL --project-name=origami-crm
+
+# Optional: web research for AI timezone detection (deep research fallback)
+npx wrangler pages secret put FIRECRAWL_API_KEY --project-name=origami-crm
+npx wrangler pages secret put TAVILY_API_KEY --project-name=origami-crm   # or SERPER_API_KEY
+npx wrangler secret put FIRECRAWL_API_KEY --config wrangler.enrichment.toml
+npx wrangler secret put TAVILY_API_KEY --config wrangler.enrichment.toml   # or SERPER_API_KEY
 ```
 
 Each command prompts for the value — paste the value and press Enter.

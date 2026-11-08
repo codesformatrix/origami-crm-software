@@ -139,7 +139,8 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
   const insights = insightCandidates.filter((x) => { const key = x.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); if (!key || seenInsights.has(key)) return false; seenInsights.add(key); return true; }).slice(0, 3);
   return {
     sender: { name: sender.sender_name || '', company: sender.sender_company || 'Origami Consulting', physical_mailing_address: sender.physical_mailing_address || '' },
-    prospect: { id: contact.id, name: contact.name || '', title: contact.title || '', email: contact.email || '', company: company.name || '', domain: company.domain || '', size: company.employees || '', description: company.what_they_do || '', niche: company.sub_niche || '', recent_news: company.recent_news || '', open_roles: company.open_eng_roles || '' },
+    prospect: { id: contact.id, name: contact.name || '', title: contact.title || '', email: contact.email || '', company: company.name || '', domain: company.domain || '', size: company.employees || '', description: company.what_they_do || '', niche: company.sub_niche || '', recent_news: company.recent_news || '', open_roles: company.open_eng_roles || '', city: contact.city || company.city || '', country: contact.country || company.country || '', timezone: contact.timezone || company.timezone || '' },
+    location_context: { city: contact.city || company.city || '', country: contact.country || company.country || '', timezone: contact.timezone || company.timezone || '', note: contact.timezone || company.timezone ? 'The prospect is in ' + (contact.city || company.city || 'this location') + ', ' + (contact.country || company.country || 'this country') + ' (' + (contact.timezone || company.timezone) + '). Write as someone familiar with their local market and context.' : '' },
     research: { summary: research.summary || '', pain_points: pain, talking_points: talking, icp_score: research.icp_score, icp_reason: research.icp_reason || '' },
     offer_framework: `software consulting company helping ${offerICP} ship ${outcome} without ${painPoint}`,
     offer_framework_is_positioning_not_prospect_fact: 'Use this as context only. Do not claim the prospect has delivery delays unless the saved research says so.',
@@ -152,6 +153,7 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
       voice: 'Write like a thoughtful person, not a marketing template. Use plain words at a 5th to 8th grade reading level. No fluff, bluff, buzzwords, generic niceties, or dash punctuation. No more than one question. One clear CTA only, either an interest check or a 15 minute slot.',
       subject: 'Use one shared 2 to 5 word lowercase subject for all four emails so Gmail threads correctly. Keep it relevant and curious, never clickbait.',
       signature: 'Use only the supplied sender name and company if signing. The mailing address is context only. Do not invent facts or claims.',
+      location: 'If the prospect location is available, write with local context awareness: write as someone who knows their market and environment, and reference the location naturally when relevant. Never mention the timezone mechanically and never invent local facts.',
       unsubscribe: `Include this exact link in the footer of every email: ${unsubscribeUrl}`,
       icp: { authority: icp.authority || '', company_size: `${icp.min_size || '10'} to ${icp.max_size || '500'}`, technology_services_fit: icp.technology_fit || '' },
     },
@@ -469,4 +471,33 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
   await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,sequence_id=?,enrollment_id=?,detail='Four reviewed drafts scheduled. Business-day cadence is applied after each send.',finished_at=?,updated_at=? WHERE contact_id=?")
     .bind(sequenceId, enrollment?.id || null, stamp, stamp, contactId).run();
   return { scheduled: true, sequence_id: sequenceId, enrollment_id: enrollment?.id || null, next_action: contact.next_action || stamp };
+}
+// Pre-send refresh: rewrite scheduled emails whose send time is 6 to 12 hours
+// away (or due right now) when the latest research is newer than the draft.
+// Regeneration uses the newest available context and never touches sent
+// emails or the schedule.
+export async function refreshScheduledDrafts(env, DB, now = new Date(), minHours = 6, maxHours = 12) {
+  const from = new Date(now.getTime() + minHours * 3600 * 1000).toISOString();
+  const to = new Date(now.getTime() + maxHours * 3600 * 1000).toISOString();
+  const due = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+  const rows = (await DB.prepare(`SELECT e.id,e.email_draft_id,d.contact_id,d.step_number,d.generated_at,d.scheduled_at
+    FROM emails e JOIN email_drafts d ON d.id=e.email_draft_id
+    WHERE e.status='scheduled' AND ((e.scheduled_at>=? AND e.scheduled_at<=?) OR e.scheduled_at<=?)`).bind(from, to, due).all()).results || [];
+  const results = [];
+  for (const row of rows) {
+    try {
+      const latest = await DB.prepare('SELECT fetched_at FROM research_notes WHERE contact_id=? ORDER BY fetched_at DESC,id DESC LIMIT 1').bind(row.contact_id).first();
+      if (!latest || String(latest.fetched_at) <= String(row.generated_at || '')) {
+        results.push({ contact_id: row.contact_id, step_number: row.step_number, skipped: 'no_new_research' });
+        continue;
+      }
+      const result = await regenerateStep(env, DB, row.contact_id, Number(row.step_number));
+      await DB.prepare("UPDATE copywriting_jobs SET detail=?, updated_at=? WHERE contact_id=?").bind(
+        `Email ${row.step_number} auto-rewritten with the latest research before send`, nowIso(), row.contact_id).run();
+      results.push({ contact_id: row.contact_id, step_number: row.step_number, refreshed: true, score: Number(result.draft.personalization_score), needs_review: result.needs_review });
+    } catch (e) {
+      results.push({ contact_id: row.contact_id, step_number: row.step_number, skipped: String(e?.message || e).slice(0, 200) });
+    }
+  }
+  return { processed: results.length, refreshed: results.filter((r) => r.refreshed).length, results };
 }

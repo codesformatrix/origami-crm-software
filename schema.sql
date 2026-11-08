@@ -284,6 +284,21 @@ CREATE TABLE IF NOT EXISTS copywriting_jobs (
   FOREIGN KEY(contact_id) REFERENCES contacts(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_copywriting_jobs_status ON copywriting_jobs(status,queued_at);
+CREATE TABLE IF NOT EXISTS timezone_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contact_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  detail TEXT DEFAULT '',
+  error TEXT DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT,
+  finished_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT,
+  FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_timezone_jobs_status ON timezone_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_timezone_jobs_contact ON timezone_jobs(contact_id);
 CREATE TABLE IF NOT EXISTS email_drafts (
   id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, step_number INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft', subject TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', unsubscribe_url TEXT NOT NULL DEFAULT '',

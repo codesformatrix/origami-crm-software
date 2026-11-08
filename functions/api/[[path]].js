@@ -6,6 +6,7 @@ import { buildInsights, buildPlan, scoreContact } from '../lib/coach.js';
 import { configuredProviders, generateWithFallback } from '../lib/llm.js';
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
 import { enqueueCopywritingJob, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft } from '../lib/copywriting.js';
+import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
 import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification } from '../lib/gmail.js';
 import { isEmailSuppressed, rememberSuppression, anonymizeSuppression, normalizedDomain, safeDkimSelector, warmupCap } from '../lib/compliance.js';
 
@@ -611,6 +612,9 @@ export async function onRequest(context) {
     if (p0 === "copywriting" && p1 === "run" && method === "POST") {
       return json(await runCopywritingBatch({ ...env, PUBLIC_APP_URL: env.PUBLIC_APP_URL || new URL(request.url).origin }, 10));
     }
+    if (p0 === "timezone" && p1 === "run" && method === "POST") {
+      return json(await runTimezoneBatch({ ...env, PUBLIC_APP_URL: env.PUBLIC_APP_URL || new URL(request.url).origin }, 10));
+    }
     if (p0 === "email-drafts" && p1 && method === "PUT") {
       const id = Number.parseInt(p1, 10); const b = await readBody(request);
       try {
@@ -654,6 +658,24 @@ export async function onRequest(context) {
           const message = String(e?.message || e).slice(0, 200);
           return json({ error: message }, /no llm provider|quota|PUBLIC_APP_URL/i.test(message) ? 503 : 400);
         }
+      }
+      if (p2 === "timezone" && method === "POST") {
+        const exists = await db().prepare("SELECT id FROM contacts WHERE id=?").bind(id).first();
+        if (!exists) return json({ error: "not found" }, 404);
+        await enqueueTimezoneJob(db(), id);
+        const b = await readBody(request);
+        if (b.run_now === true) {
+          try {
+            const result = await detectTimezone(env, db(), id);
+            await db().prepare("UPDATE timezone_jobs SET status='done',detail=?,finished_at=?,updated_at=? WHERE contact_id=? AND status='queued'").bind(result.timezone + ' (' + result.source + ')', new Date().toISOString(), new Date().toISOString(), id).run();
+            return json({ ok: true, detected: true, timezone: result.timezone, source: result.source, city: result.city, country: result.country });
+          } catch (e) {
+            await db().prepare("UPDATE timezone_jobs SET status='failed',error=?,finished_at=?,updated_at=? WHERE contact_id=? AND status='queued'").bind(String(e?.message || e).slice(0, 500), new Date().toISOString(), new Date().toISOString(), id).run();
+            const message = String(e?.message || e).slice(0, 200);
+            return json({ error: message }, /no llm provider|quota|could not determine/i.test(message) ? 503 : 400);
+          }
+        }
+        return json({ ok: true, queued: true });
       }
       if (p2 === "enrich" && method === "POST") {
         const exists = await db().prepare("SELECT id,status,email FROM contacts WHERE id=?").bind(id).first();
@@ -741,11 +763,12 @@ export async function onRequest(context) {
         const research_notes = (await db().prepare("SELECT * FROM research_notes WHERE contact_id=? ORDER BY fetched_at DESC,id DESC").bind(id).all()).results;
         const enrichment = await db().prepare("SELECT * FROM enrichment_jobs WHERE contact_id=?").bind(id).first();
         const copywriting = await db().prepare("SELECT * FROM copywriting_jobs WHERE contact_id=?").bind(id).first();
+        const timezone_job = await db().prepare("SELECT * FROM timezone_jobs WHERE contact_id=? ORDER BY id DESC LIMIT 1").bind(id).first();
         const active_enrollment = await db().prepare("SELECT e.*,s.name AS sequence_name FROM enrollments e JOIN sequences s ON s.id=e.sequence_id WHERE e.contact_id=? AND e.status='active' ORDER BY e.id DESC LIMIT 1").bind(id).first();
         const email_drafts = (await db().prepare("SELECT * FROM email_drafts WHERE contact_id=? ORDER BY step_number").bind(id).all()).results;
         const gmail = await gmailStatus(db(), env);
         const send_jobs = (await db().prepare("SELECT id,email_draft_id,status,scheduled_at,attempt_count,last_error,sent_at FROM emails WHERE contact_id=? ORDER BY id").bind(id).all()).results;
-        return json({ contact, company, messages, compliance_events, templates, others, research_notes, enrichment, copywriting, active_enrollment, email_drafts, send_jobs, gmail, bucket: bucketFor(contact.next_action) });
+        return json({ contact, company, messages, compliance_events, templates, others, research_notes, enrichment, copywriting, timezone_job, active_enrollment, email_drafts, send_jobs, gmail, bucket: bucketFor(contact.next_action) });
       }
       if (method === "PUT") {
         const b = await readBody(request);
@@ -2283,6 +2306,7 @@ export async function onRequest(context) {
             }
           }
           await enqueueProspect(DB, importedPerson.id);
+          if (!String(get("timezone") || "").trim()) await enqueueTimezoneJob(DB, importedPerson.id);
           if (email) seenEmails.add(email);
           createdContacts++;
         }
