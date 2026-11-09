@@ -19,6 +19,7 @@
     "test:copywriting-regen": "node tools/copywriting_regen_test.mjs",
     "test:timezone": "node tools/timezone_test.mjs",
     "test:prerefresh": "node tools/prerefresh_test.mjs",
+    "test:import-mapping": "node tools/import_mapping_test.mjs",
     "test:copywriting-api": "node tools/copywriting_api_test.mjs",
     "test:gmail": "node tools/gmail_test.mjs",
     "test:sequence-health": "node tools/sequence_health_test.mjs",

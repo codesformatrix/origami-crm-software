@@ -68,7 +68,7 @@ If it says the project already exists (from an older setup), skip this step.
 npx wrangler d1 execute origami-crm --file=schema.sql --remote --yes
 ```
 
-This creates all 34 tables in the cloud database. (Migrations are NOT needed for a fresh database. If you already deployed an older database, apply the incremental migration with `npx wrangler d1 execute origami-crm --file=migrate14.sql --remote --yes` — it adds the `timezone_jobs` table used by automatic pre-send refresh and AI timezone detection.)
+This creates all 34 tables in the cloud database. (Migrations are NOT needed for a fresh database. If you already deployed an older database, apply the incremental migration with `npx wrangler d1 execute origami-crm --file=migrate14.sql --remote --yes` — it adds the `timezone_jobs` table used by automatic pre-send refresh and AI timezone detection. If you uploaded spreadsheets with live-product, founders, or technical-lead columns, also apply `npx wrangler d1 execute origami-crm --file=migrate15.sql --remote --yes`.)
 
 ## Step 7 — Set the required secrets
 

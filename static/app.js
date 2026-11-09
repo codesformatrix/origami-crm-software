@@ -703,6 +703,9 @@ async function renderContact(id) {
         <dt>Funding</dt><dd>${esc(co.funding || '—')}</dd>
         <dt>Headcount</dt><dd>${esc(co.employees || '—')}</dd>
         <dt>Founded</dt><dd>${esc(co.founded || '—')}</dd>
+        <dt>Live product</dt><dd>${esc(co.live_product || '—')}</dd>
+        <dt>Founders</dt><dd>${esc(co.founders || '—')}</dd>
+        <dt>Technical lead</dt><dd>${esc(co.technical_lead || '—')}</dd>
       </dl></div>
 
     <div class="panel"><h3>Update status</h3><form id="statusform">
@@ -1357,7 +1360,7 @@ async function renderSettings() {
     ['linkedin', 'Company LinkedIn'], ['sub_niche', 'Sub-niche'], ['what_they_do', 'What they do'],
     ['hq', 'HQ location'], ['city', 'City'], ['country', 'Country'], ['founded', 'Founded'], ['employees', 'Employees'], ['funding', 'Funding (combined)'],
     ['funding_stage', 'Funding stage'], ['total_raised', 'Total raised'], ['last_funding_date', 'Last funding date'],
-    ['open_eng_roles', 'Open engineering roles'], ['recent_news', 'Recent news'],
+    ['open_eng_roles', 'Open engineering roles'], ['recent_news', 'Recent news / recent activity'], ['live_product', 'Live product (Y/N)'], ['founders', 'Founders'], ['technical_lead', 'CTO / technical co-founder (Y/N)'], ['source', 'Company source URLs'],
     ['public_appearances', 'Public appearances'], ['criteria_flags', 'Flags / criteria check'],
     ['contact', 'Decision maker'], ['first_name', 'First name'], ['last_name', 'Last name'], ['title', 'Title'],
     ['dm_linkedin', 'DM LinkedIn'], ['email', 'Email'], ['phone', 'Phone'], ['time_in_role', 'DM time in role'],
@@ -1369,7 +1372,7 @@ async function renderSettings() {
     website: ['website', 'company website', 'company site', 'site', 'company url', 'url'],
     linkedin: ['company linkedin', 'company linkedin url', 'linkedin company', 'company linkedin page', 'linkedin'],
     sub_niche: ['sub niche', 'subniche', 'niche', 'industry', 'vertical'],
-    what_they_do: ['what they do', 'company description', 'description', 'about', 'product', 'business description'],
+    what_they_do: ['what they do', 'what the product does', 'company description', 'description', 'about', 'product', 'business description'],
     hq: ['hq', 'hq location', 'headquarters', 'headquarters location', 'location', 'based in'],
     city: ['city', 'town'],
     country: ['country', 'nation'],
@@ -1378,22 +1381,26 @@ async function renderSettings() {
     funding: ['funding', 'funding details', 'funding information'],
     funding_stage: ['funding stage', 'investment stage', 'stage'],
     total_raised: ['total raised', 'total funding', 'amount raised', 'funding amount'],
-    last_funding_date: ['last funding date', 'latest funding date', 'funding date'],
+    last_funding_date: ['last funding date', 'latest funding date', 'funding date', 'last round date'],
     open_eng_roles: ['open eng roles', 'open engineering roles', 'engineering roles', 'open roles', 'hiring'],
-    recent_news: ['recent news', 'latest news', 'news'],
+    recent_news: ['recent news', 'latest news', 'news', 'recent activity'],
     public_appearances: ['public appearances', 'appearances', 'podcasts', 'events', 'talks'],
-    criteria_flags: ['flags criteria check', 'flags', 'criteria check', 'criteria', 'fit flags'],
-    contact: ['decision maker', 'decision maker name', 'decisionmaker', 'contact', 'contact name', 'person', 'founder', 'name', 'full name', 'prospect name'],
+    criteria_flags: ['flags criteria check', 'flags', 'criteria check', 'criteria', 'fit flags', 'company notes / flags', 'company notes'],
+    contact: ['decision maker', 'decision maker name', 'decisionmaker', 'contact', 'contact name', 'person', 'founder', 'name', 'full name', 'prospect name', 'person name'],
     first_name: ['first name', 'firstname', 'given name'],
     last_name: ['last name', 'lastname', 'surname', 'family name'],
-    title: ['title', 'job title', 'dm title', 'decision maker title', 'role', 'position'],
-    dm_linkedin: ['dm linkedin', 'decision maker linkedin', 'decisionmaker linkedin', 'contact linkedin', 'person linkedin', 'linkedin profile', 'linkedin url', 'linkedin_url', 'person linkedin url', 'profile url'],
+    title: ['title', 'job title', 'dm title', 'decision maker title', 'role', 'position', 'person role'],
+    dm_linkedin: ['dm linkedin', 'decision maker linkedin', 'decisionmaker linkedin', 'contact linkedin', 'person linkedin', 'linkedin profile', 'linkedin url', 'linkedin_url', 'person linkedin url', 'profile url', 'person linkedin profile'],
     email: ['email', 'email address', 'dm email', 'decision maker email', 'work email', 'contact email'],
     phone: ['phone', 'phone number', 'dm phone', 'decision maker phone', 'mobile', 'telephone', 'whatsapp'],
     time_in_role: ['dm time in role', 'time in role', 'time in current role', 'tenure'],
     previous_roles: ['dm previous roles', 'previous roles', 'past roles', 'career history'],
     education: ['dm education', 'education', 'academic background', 'school'],
-    notes: ['notes', 'extra context', 'additional notes', 'comments'],
+    notes: ['notes', 'extra context', 'additional notes', 'comments', 'person background / notes', 'person background', 'person source url', 'person source urls', 'dm background'],
+    live_product: ['live product', 'live product (y/n)', 'has live product', 'product live'],
+    founders: ['founders', 'founder names', 'co-founders', 'cofounders'],
+    technical_lead: ['cto / technical co-founder', 'cto', 'technical co-founder', 'technical lead', 'cto / technical co-founder (y/n)'],
+    source: ['company source url', 'company source urls', 'company source', 'source url', 'source urls'],
   };
   const GENERIC_ALIASES = new Set(['company', 'business', 'startup', 'organization', 'organisation', 'linkedin', 'contact', 'person', 'title', 'location', 'website', 'email', 'phone', 'education', 'notes', 'stage']);
   const headerScore = (header, alias) => {

@@ -527,7 +527,7 @@ export async function onRequest(context) {
           "UPDATE companies SET name=?,domain=?,website=?,linkedin=?,sub_niche=?,what_they_do=?," +
           "employees=?,hq=?,founded=?,funding=?,funding_stage=?,total_raised=?,last_funding_date=?," +
           "open_eng_roles=?,recent_news=?,public_appearances=?,criteria_flags=?,context=?,risks=?," +
-          "status=?,cadence=?,city=?,country=?,country_key=?,country_code=?,timezone=? WHERE id=?"
+          "status=?,cadence=?,city=?,country=?,country_key=?,country_code=?,timezone=?,live_product=?,founders=?,technical_lead=? WHERE id=?"
         ).bind(str(existing.name), str(existing.domain), str(existing.website), str(existing.linkedin),
                str(existing.sub_niche), str(existing.what_they_do), str(existing.employees), str(existing.hq),
                str(existing.founded), str(existing.funding), str(existing.funding_stage), str(existing.total_raised),
@@ -535,7 +535,7 @@ export async function onRequest(context) {
                str(existing.public_appearances), str(existing.criteria_flags), str(existing.context), str(existing.risks),
                str(existing.status) || "new", parseInt(existing.cadence, 10) || 4,
                str(existing.city) || loc.city, str(existing.country) || loc.country, loc.country_key, loc.country_code,
-               str(existing.timezone) || loc.timezone, id).run();
+               str(existing.timezone) || loc.timezone, str(existing.live_product), str(existing.founders), str(existing.technical_lead), id).run();
         return json({ ok: true, detected: loc });
       }
       if (method === "DELETE") {
@@ -2262,11 +2262,13 @@ export async function onRequest(context) {
           const r = await DB.prepare(
             "INSERT INTO companies(name,domain,website,linkedin,sub_niche,what_they_do,employees,hq,founded,funding," +
             "funding_stage,total_raised,last_funding_date,open_eng_roles,recent_news,public_appearances,criteria_flags,created_at," +
-            "city,country,country_key,country_code,timezone) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            "city,country,country_key,country_code,timezone,live_product,founders,technical_lead,source) " +
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
           ).bind(companyName, domain, website || (domain ? "https://" + domain : ""), get("linkedin"), get("sub_niche"),
                  get("what_they_do"), get("employees"), importHq, get("founded"), funding, fundingStage, totalRaised,
                  lastFundingDate, get("open_eng_roles"), get("recent_news"), get("public_appearances"), get("criteria_flags"),
-                 today(), city, country, loc.country_key, loc.country_code, loc.timezone).run();
+                 today(), city, country, loc.country_key, loc.country_code, loc.timezone,
+                 get("live_product"), get("founders"), get("technical_lead"), get("source") || "import").run();
           co = { id: r.meta.last_row_id, name: companyName, hq: importHq, city, country, country_key: loc.country_key, country_code: loc.country_code };
           createdCompanies++;
         } else if (importHq || get("city") || get("country")) {
@@ -2274,8 +2276,8 @@ export async function onRequest(context) {
           const hq = importHq || co.hq || "";
           const city = get("city") || loc.city || co.city || "";
           const country = get("country") || loc.country || co.country || "";
-          await DB.prepare("UPDATE companies SET hq=?,city=?,country=?,country_key=?,country_code=?,timezone=CASE WHEN timezone='' THEN ? ELSE timezone END WHERE id=?")
-            .bind(hq, city, country, loc.country_key || co.country_key || "", loc.country_code || co.country_code || "", loc.timezone || "", co.id).run();
+          await DB.prepare("UPDATE companies SET hq=?,city=?,country=?,country_key=?,country_code=?,timezone=CASE WHEN timezone='' THEN ? ELSE timezone END, live_product=CASE WHEN live_product='' THEN ? ELSE live_product END, founders=CASE WHEN founders='' THEN ? ELSE founders END, technical_lead=CASE WHEN technical_lead='' THEN ? ELSE technical_lead END, source=CASE WHEN source='' OR source='manual' THEN ? ELSE source END WHERE id=?")
+            .bind(hq, city, country, loc.country_key || co.country_key || "", loc.country_code || co.country_code || "", loc.timezone || "", get("live_product"), get("founders"), get("technical_lead"), get("source") || "", co.id).run();
           co = { ...co, hq, city, country, country_key: loc.country_key || co.country_key || "", country_code: loc.country_code || co.country_code || "" };
         }
         const nm = get("contact") || [get("first_name"), get("last_name")].filter(Boolean).join(" ");
