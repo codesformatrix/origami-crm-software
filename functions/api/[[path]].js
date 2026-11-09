@@ -85,7 +85,7 @@ function numOr(v, dflt) {
 // it is never returned to the browser or persisted in localStorage.
 const SESSION_SECONDS = 12 * 60 * 60;
 function authCookieName(request) {
-  return new URL(request.url).protocol === "https:" ? "__Host-ocrm_session" : "ocrm_session";
+  return "ocrm_session";
 }
 const encoder = new TextEncoder();
 function base64url(bytes) {
