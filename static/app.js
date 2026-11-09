@@ -22,6 +22,8 @@ function nl2br(s) { return esc(s).replace(/\n/g, '<br>'); }
 async function api(path, opts) {
   opts = opts || {};
   const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  const tk = localStorage.getItem('ocrm_token');
+  if (tk) headers['Authorization'] = 'Bearer ' + tk;
   const res = await fetch('/api/' + path, Object.assign({}, opts, { headers: headers }));
   if (res.status === 401) {
     if (path !== 'login') renderLogin('Session expired — enter the password again.');
@@ -1323,7 +1325,7 @@ async function renderSettings() {
     document.getElementById('tzumsg').textContent = mine ? 'detected ' + mine + ' — press Save' : 'not available';
   };
   const lo = document.getElementById('logout');
-  if (lo) lo.onclick = async () => { try { await post('logout', {}); } finally { renderLogin('Signed out.'); } };
+  if (lo) lo.onclick = async () => { try { await post('logout', {}); } finally { localStorage.removeItem('ocrm_token'); renderLogin('Signed out.'); } };
 
   /* ---- snippets ---- */
   const snipList = document.getElementById('snip-list');
@@ -1536,6 +1538,7 @@ function renderLogin(message) {
     try {
       const r = await post('login', o);
       if (!r.ok) return renderLogin('Wrong password.');
+      if (r.token) localStorage.setItem('ocrm_token', r.token);
       route();
     } catch (err) {
       renderLogin(err.message === 'wrong password' ? 'Wrong password.' : 'Could not sign in: ' + err.message);

@@ -126,7 +126,12 @@ function cookieValue(request, name) {
 }
 async function sessionValid(request, secret) {
   if (!secret) return false;
-  const value = cookieValue(request, authCookieName(request));
+  let value = cookieValue(request, authCookieName(request));
+  if (!value) {
+    const authHeader = request.headers.get("Authorization") || "";
+    const bearer = authHeader.match(/^Bearer\s+(.+)$/);
+    if (bearer) value = bearer[1];
+  }
   const dot = value.indexOf(".");
   if (dot < 1) return false;
   const expiry = value.slice(0, dot);
@@ -375,7 +380,8 @@ export async function onRequest(context) {
       if (!constantTimeEqual(str(b.key), appKey)) return json({ ok: false, error: "wrong password" }, 401);
       const expiry = String(Math.floor(Date.now() / 1000) + SESSION_SECONDS);
       const signature = base64url(await hmac(expiry, appKey));
-      return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(request, `${expiry}.${signature}`, SESSION_SECONDS) });
+      const token = `${expiry}.${signature}`;
+      return json({ ok: true, token }, 200, { "Set-Cookie": sessionCookie(request, token, SESSION_SECONDS) });
     }
     if (p0 === "logout" && method === "POST") {
       return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(request, "", 0) });
