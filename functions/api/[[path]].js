@@ -2296,9 +2296,9 @@ export async function onRequest(context) {
         if (nm.trim() || email) {
           const added = await DB.prepare(
             "INSERT INTO contacts(company_id,name,title,email,phone,linkedin,notes,time_in_role,previous_roles,education," +
-            "status,cadence,touch_count,next_action,created_at,timezone) VALUES(?,?,?,?,?,?,?,?,?,?,'new',?,0,?,?,?)"
+            "status,cadence,touch_count,next_action,created_at,timezone,email_discovery_status) VALUES(?,?,?,?,?,?,?,?,?,?,'new',?,0,?,?,?,?)"
           ).bind(co.id, nm.trim() || "(unnamed)", get("title"), email, get("phone"), get("dm_linkedin"), notes,
-                 get("time_in_role"), get("previous_roles"), get("education"), parseInt(b.cadence, 10) || 4, today(), today(), get("timezone")).run();
+                 get("time_in_role"), get("previous_roles"), get("education"), parseInt(b.cadence, 10) || 4, today(), today(), get("timezone"), email ? "found" : "not_requested").run();
           const importedPerson = { id: added.meta.last_row_id, title: get("title") };
           for (const project of importProjects) {
             if (projectMatches(project, importedPerson, co)) {
