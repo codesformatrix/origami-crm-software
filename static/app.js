@@ -1093,6 +1093,14 @@ async function renderSettings() {
     ${gmailStatus.connection_type === 'smtp' ? '<button class="btn" id="gmail-smtp-disconnect">Disconnect SMTP</button>' : ''}
     <span class="small muted">${gmailStatus.connection_type === 'smtp' ? 'SMTP connection active' : ''}</span></div>
     </details></div>
+    <div class="mt" style="border-top:1px solid var(--line);padding-top:12px">
+    <details><summary class="small" style="cursor:pointer">Or paste an OAuth refresh token</summary>
+    <p class="small muted">If the OAuth consent screen gives a 403, run the token helper script on your own computer (which has internet access), then paste the REFRESH_TOKEN here. <a href="https://github.com/codesformatrix/origami-crm-software/blob/main/get-gmail-token.mjs" target="_blank" rel="noopener">Script instructions ↓</a></p>
+    <div class="f one"><div><label>Gmail email address</label><input id="token-email" type="email" placeholder="you@gmail.com"></div></div>
+    <div class="f one"><div><label>Refresh token</label><textarea id="token-value" rows="3" placeholder="ya29.... (long refresh token)"></textarea></div></div>
+    <div class="row"><button class="btn pri" id="gmail-token-save">Save & Connect</button>
+    <span class="small muted">Token is verified against Google and stored encrypted.</span></div>
+    </details></div>
     <p class="small muted">Safety: at most one send per 10-minute worker run, no more than the configured daily cap or 500 per UTC day, and only 9:00–11:00 local time Monday–Thursday. No randomized timing to disguise automation. Human replies stop remaining emails; dated out-of-office replies pause and reschedule after the return date.</p>
     <p class="small muted">Google’s <code>gmail.readonly</code> scope is restricted. Public production use may require Google verification and a security assessment. OAuth apps left in Testing can issue refresh tokens that expire after seven days.</p>
     <h4>Recent send history</h4><div id="gmail-send-log" class="small muted">Loading…</div>
@@ -1217,6 +1225,15 @@ async function renderSettings() {
   };
   const smtpDisconnect = document.getElementById('gmail-smtp-disconnect');
   if (smtpDisconnect) smtpDisconnect.onclick = async () => { if (!confirm('Disconnect SMTP and pause all scheduled sends?')) return; await post('gmail/smtp/disconnect', {}); toast('SMTP disconnected and sends paused'); route(); };
+  const tokenSave = document.getElementById('gmail-token-save');
+  if (tokenSave) tokenSave.onclick = async () => {
+    const email = document.getElementById('token-email').value.trim();
+    const token = document.getElementById('token-value').value.trim();
+    if (!token) { toast('Paste the refresh token first'); return; }
+    tokenSave.disabled = true; tokenSave.textContent = 'Verifying…';
+    try { const r = await post('gmail/token/save', { refresh_token: token, email_address: email }); toast('Gmail connected (' + (r.email_address || 'verified') + ')'); route(); }
+    catch (err) { toast(err.message); tokenSave.disabled = false; tokenSave.textContent = 'Save & Connect'; }
+  };
   get('gmail/log').then((log) => {
     const box = document.getElementById('gmail-send-log'); if (!box) return;
     box.innerHTML = (log.emails || []).length ? `<div class="scroll"><table><thead><tr><th>Scheduled</th><th>Contact</th><th>Step</th><th>Status</th><th>Attempts</th><th>Details</th></tr></thead><tbody>${log.emails.map((e) => `<tr><td>${esc(e.scheduled_at || '')}</td><td>${esc(e.contact_name)} · ${esc(e.recipient_email || '')}</td><td>${e.step_number}</td><td>${esc(e.status)}</td><td>${e.attempts}</td><td>${esc(e.last_error || e.gmail_message_id || '')}</td></tr>`).join('')}</tbody></table></div><details class="mt"><summary>Attempt audit (${(log.attempts || []).length})</summary><div class="scroll"><table><thead><tr><th>Time</th><th>Contact</th><th>Step</th><th>Status</th><th>HTTP</th><th>Error</th></tr></thead><tbody>${(log.attempts || []).map((a) => `<tr><td>${esc(a.attempted_at)}</td><td>${esc(a.contact_name)}</td><td>${a.step_number}</td><td>${esc(a.status)}</td><td>${esc(a.http_status || '')}</td><td>${esc(a.error || '')}</td></tr>`).join('')}</tbody></table></div></details>` : 'No scheduled or attempted Gmail emails yet.';

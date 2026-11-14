@@ -7,7 +7,7 @@ import { configuredProviders, generateWithFallback } from '../lib/llm.js';
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
 import { enqueueCopywritingJob, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft } from '../lib/copywriting.js';
 import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
-import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect } from '../lib/gmail.js';
+import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken } from '../lib/gmail.js';
 import { isEmailSuppressed, rememberSuppression, anonymizeSuppression, normalizedDomain, safeDkimSelector, warmupCap } from '../lib/compliance.js';
 
 const OPEN = ["new", "active", "replied"];
@@ -616,6 +616,10 @@ export async function onRequest(context) {
     }
     if (p0 === "gmail" && p1 === "smtp" && p2 === "disconnect" && method === "POST") {
       return json(await smtpDisconnect(env, db()));
+    }
+    if (p0 === "gmail" && p1 === "token" && p2 === "save" && method === "POST") {
+      const b = await readBody(request);
+      return json(await saveManualToken(env, db(), str(b.refresh_token), str(b.email_address || '')));
     }
     if (p0 === "copywriting" && !p1 && method === "GET") {
       const rows = (await db().prepare(`SELECT j.*,c.name AS contact_name,c.title,co.name AS company_name,
