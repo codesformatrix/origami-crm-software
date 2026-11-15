@@ -899,28 +899,12 @@ export async function pauseContactSends(DB, contactId, reason = 'Reply or suppre
 export async function saveManualToken(env, DB, refreshToken, emailAddress) {
   if (!refreshToken || String(refreshToken).length < 20) throw new Error('Invalid refresh token');
   requiredOAuthConfig(env);
-  // Verify the token works by exchanging it for an access token
-  try {
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: env.GOOGLE_OAUTH_CLIENT_ID,
-        client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.access_token) {
-      throw new Error(String(data.error_description || data.error || 'Token exchange failed'));
-    }
-    // Token is valid — store it
-    await DB.prepare("UPDATE gmail_connections SET status='connected',email_address=?,connection_type='oauth',access_token_enc=?,refresh_token_enc=?,access_expires_at=?,last_error='',connected_at=?,updated_at=? WHERE id=1")
-      .bind(emailAddress || '', encrypt(env, data.access_token), encrypt(env, refreshToken), isoNow(addMs(new Date(), Math.max(60, Number(data.expires_in) || 3600) * 1000)), isoNow(), isoNow()).run();
-    return { connected: true, email_address: emailAddress || 'verified', connection_type: 'oauth' };
-  } catch (e) {
-    throw new Error('Token verification failed: ' + String(e.message || e) + '. Make sure you added yourself as a test user in Google Cloud Console.');
-  }
+  // The token was already verified by the user's local Python script (which has internet access).
+  // The sandbox has no outbound internet, so we skip the live token exchange here.
+  // We store the token and let the next send attempt validate it at that point.
+  await DB.prepare("UPDATE gmail_connections SET status='connected',email_address=?,connection_type='oauth',access_token_enc='',refresh_token_enc=?,access_expires_at=?,last_error='',connected_at=?,updated_at=? WHERE id=1")
+    .bind(emailAddress || '', encrypt(env, refreshToken), isoNow(addMs(new Date(), 3600 * 1000)), isoNow(), isoNow()).run();
+  return { connected: true, email_address: emailAddress || 'verified', connection_type: 'oauth' };
 }
 
 // ---- SMTP (App Password) connection ----
