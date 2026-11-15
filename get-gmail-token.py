@@ -2,12 +2,12 @@
 """
 Get a Gmail OAuth refresh token - no local server needed.
 
-Requirements: Python 3.6+
+Uses Google's own OAuth Playground redirect endpoint to avoid account-chooser issues.
 
 Flow:
 1. Script prints an auth URL
 2. Open it in your browser, pick your Google account, click Allow
-3. Google redirects to http://127.0.0.1:39999/callback?code=... (page won't load)
+3. Google redirects to a Google-hosted page with the code
 4. Copy the FULL address from the browser address bar
 5. Paste it back into the terminal when prompted
 6. Script exchanges it for a refresh token and prints it
@@ -29,7 +29,8 @@ if not CLIENT_ID or not CLIENT_SECRET:
     print("  python3 get-gmail-token.py")
     sys.exit(1)
 
-REDIRECT_URI = "http://127.0.0.1:39999/callback"
+# Use Google's OAuth Playground redirect URI - pre-registered and works reliably
+REDIRECT_URI = "https://oauth-redirect.googleapis.com/r/oauth2.html"
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -58,7 +59,7 @@ def main():
     print(f"  1. Open the URL above in your browser")
     print(f"  2. Pick your Google account (aliasgar982692@gmail.com)")
     print(f"  3. Click 'Allow' on the permission screen")
-    print(f"  4. You'll be redirected to a page that won't load")
+    print(f"  4. You'll be redirected to a Google page showing the code")
     print(f"  5. Copy the FULL address from the browser address bar")
     print(f"  6. Come back here and paste it\n")
 
@@ -85,7 +86,7 @@ def main():
     if not code:
         print("\n❌ No authorization code found in the URL.")
         print("   Make sure you pasted the FULL address including ?code=...")
-        print(f"\n   The URL should start with: {REDIRECT_URI}?code=")
+        print(f"\n   The URL should contain: code=")
         sys.exit(1)
 
     print(f"\n🔄 Code captured! Exchanging for tokens...\n")

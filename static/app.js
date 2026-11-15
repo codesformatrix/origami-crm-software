@@ -1121,6 +1121,12 @@ async function renderSettings() {
         <span class="small muted" id="th-copied" style="display:none;color:var(--ok)">Copied! Now paste it above and click Save & Connect.</span>
       </div>
     </div>
+    <div class="mt" style="border-top:1px solid var(--line);padding-top:12px">
+    <details><summary class="small" style="cursor:pointer">Or paste an OAuth refresh token (from terminal)</summary>
+    <p class="small muted">If you got the refresh token from the Python script, paste it here.</p>
+    <div class="f one"><label>Refresh token</label><textarea id="token-value" rows="3" placeholder="ya29... or 1//0g... paste the full token from the terminal" style="font-family:monospace;font-size:12px"></textarea></div>
+    <div class="row"><button class="btn pri" id="gmail-token-save">Save & Connect</button><span class="small muted" id="token-status"></span></div>
+    </details></div>
     </details></div>
     <p class="small muted">Safety: at most one send per 10-minute worker run, no more than the configured daily cap or 500 per UTC day, and only 9:00–11:00 local time Monday–Thursday. No randomized timing to disguise automation. Human replies stop remaining emails; dated out-of-office replies pause and reschedule after the return date.</p>
     <p class="small muted">Google’s <code>gmail.readonly</code> scope is restricted. Public production use may require Google verification and a security assessment. OAuth apps left in Testing can issue refresh tokens that expire after seven days.</p>
