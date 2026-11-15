@@ -268,8 +268,15 @@ export async function enqueueCopywritingJob(DB, contactId, publicOrigin = '') {
   if (['unsubscribed','do_not_contact','bounced','passed','paused','lost','replied','won'].includes(String(contact.status || '').toLowerCase()) || await isEmailSuppressed(DB, contact.email)) return { queued: false, reason: 'suppressed' };
   const existingDrafts = await DB.prepare('SELECT COUNT(*) AS n FROM email_drafts WHERE contact_id=?').bind(contactId).first();
   if (Number(existingDrafts?.n || 0)) return { queued: false, reason: 'drafts_exist' };
+  // Use existing research note if available, otherwise fall back to company context fields
   const research = await DB.prepare('SELECT id FROM research_notes WHERE contact_id=? LIMIT 1').bind(contactId).first();
-  if (!research) return { queued: false, reason: 'research_required' };
+  if (!research) {
+    // No research note yet — check if company has enough context for AI to write from
+    const enriched = await DB.prepare('SELECT c.company_name, c.description, c.niche, c.hq, c.funding, c.headcount, c.founded, c.live_product FROM contacts ct JOIN companies c ON c.id=ct.company_id WHERE ct.id=?').bind(contactId).first();
+    if (!enriched || !(enriched.description || enriched.niche || enriched.company_name)) {
+      return { queued: false, reason: 'research_required' };
+    }
+  }
   const link = await createUnsubscribeUrl(DB, contactId, publicOrigin);
   const status = link ? 'queued' : 'needs_configuration';
   await DB.prepare(`INSERT INTO copywriting_jobs(contact_id,status,stage,progress,detail,error,attempts,unsubscribe_url,queued_at,started_at,finished_at,updated_at)
