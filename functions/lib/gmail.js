@@ -936,113 +936,11 @@ export async function smtpDisconnect(env, DB) {
 }
 
 async function smtpTestConnection(email, password) {
-  const { default: tls } = await import('tls');
-  return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host: 'smtp.gmail.com', port: 587, servername: 'smtp.gmail.com' }, () => {
-      sendCmd(socket, 'EHLO origami.local', (resp) => {
-        if (!resp.includes('250')) { socket.destroy(); reject(new Error('EHLO failed: ' + resp)); return; }
-        sendCmd(socket, 'STARTTLS', (resp2) => {
-          if (!resp2.includes('220')) { socket.destroy(); reject(new Error('STARTTLS failed: ' + resp2)); return; }
-          // Wait for TLS upgrade
-          socket.once('secureConnect', () => {
-            sendCmd(socket, 'EHLO origami.local', (resp3) => {
-              if (!resp3.includes('250')) { socket.destroy(); reject(new Error('TLS EHLO failed: ' + resp3)); return; }
-              sendCmd(socket, 'AUTH LOGIN', (resp4) => {
-                if (!resp4.includes('334')) { socket.destroy(); reject(new Error('AUTH failed: ' + resp4)); return; }
-                const emailB64 = Buffer.from(email).toString('base64');
-                const pwB64 = Buffer.from(password).toString('base64');
-                sendCmd(socket, emailB64, (resp5) => {
-                  if (!resp5.includes('334')) { socket.destroy(); reject(new Error('Email auth failed: ' + resp5)); return; }
-                  sendCmd(socket, pwB64, (resp6) => {
-                    if (resp6.includes('235')) {
-                      sendCmd(socket, 'QUIT', () => { socket.destroy(); resolve(true); });
-                    } else {
-                      socket.destroy(); reject(new Error('Password auth failed: ' + resp6));
-                    }
-                  });
-                });
-              });
-            });
-          });
-        });
-      });
-    });
-    socket.setTimeout(15000, () => { socket.destroy(); reject(new Error('Connection timeout')); });
-    socket.on('error', reject);
-  });
-}
-
-function sendCmd(socket, cmd, callback) {
-  let buffer = '';
-  const handler = (data) => {
-    buffer += data.toString();
-    if (buffer.endsWith('\r\n')) {
-      socket.off('data', handler);
-      callback(buffer.trim());
-    }
-  };
-  socket.on('data', handler);
-  socket.write(cmd + '\r\n');
+  throw new Error('SMTP is not supported on Cloudflare Workers. Use OAuth (Gmail API) instead.');
 }
 
 async function smtpSendMessage(email, password, fromEmail, to, subject, body, replyHeaders) {
-  const { default: tls } = await import('tls');
-  const message = mimeMessage({ fromName: 'Origami Consulting', fromEmail, to, subject, body, replyHeaders });
-  const raw = base64Text(message);
-  return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host: 'smtp.gmail.com', port: 587, servername: 'smtp.gmail.com' }, () => {
-      sendCmd(socket, 'EHLO origami.local', (resp) => {
-        if (!resp.includes('250')) { socket.destroy(); reject(new Error('EHLO failed: ' + resp)); return; }
-        sendCmd(socket, 'STARTTLS', (resp2) => {
-          if (!resp2.includes('220')) { socket.destroy(); reject(new Error('STARTTLS failed: ' + resp2)); return; }
-          socket.once('secureConnect', () => {
-            sendCmd(socket, 'EHLO origami.local', (resp3) => {
-              if (!resp3.includes('250')) { socket.destroy(); reject(new Error('TLS EHLO failed: ' + resp3)); return; }
-              sendCmd(socket, 'AUTH LOGIN', (resp4) => {
-                if (!resp4.includes('334')) { socket.destroy(); reject(new Error('AUTH failed: ' + resp4)); return; }
-                const emailB64 = Buffer.from(email).toString('base64');
-                const pwB64 = Buffer.from(password).toString('base64');
-                sendCmd(socket, emailB64, (resp5) => {
-                  if (!resp5.includes('334')) { socket.destroy(); reject(new Error('Email auth failed: ' + resp5)); return; }
-                  sendCmd(socket, pwB64, (resp6) => {
-                    if (!resp6.includes('235')) { socket.destroy(); reject(new Error('Auth failed: ' + resp6)); return; }
-                    sendCmd(socket, `MAIL FROM:<${fromEmail}>`, (resp7) => {
-                      if (!resp7.includes('250')) { socket.destroy(); reject(new Error('MAIL FROM failed: ' + resp7)); return; }
-                      sendCmd(socket, `RCPT TO:<${to}>`, (resp8) => {
-                        if (!resp8.includes('250')) { socket.destroy(); reject(new Error('RCPT TO failed: ' + resp8)); return; }
-                        sendCmd(socket, 'DATA', (resp9) => {
-                          if (!resp9.includes('354')) { socket.destroy(); reject(new Error('DATA failed: ' + resp9)); return; }
-                          const dotEncoded = raw.replace(/\n/g, '\r\n');
-                          const dataEnd = '\r\n.\r\n';
-                          let chunkPos = 0;
-                          const chunkSize = 1024;
-                          function sendNext() {
-                            if (chunkPos >= dotEncoded.length) {
-                              sendCmd(socket, dataEnd.trim(), (resp10) => {
-                                if (!resp10.includes('250')) { socket.destroy(); reject(new Error('DATA end failed: ' + resp10)); return; }
-                                sendCmd(socket, 'QUIT', () => { socket.destroy(); resolve(true); });
-                              });
-                            } else {
-                              socket.write(dotEncoded.substring(chunkPos, chunkPos + chunkSize));
-                              chunkPos += chunkSize;
-                              setImmediate(sendNext);
-                            }
-                          }
-                          sendNext();
-                        });
-                      });
-                    });
-                  });
-                });
-              });
-            });
-          });
-        });
-      });
-    });
-    socket.setTimeout(30000, () => { socket.destroy(); reject(new Error('Send timeout')); });
-    socket.on('error', reject);
-  });
+  throw new Error('SMTP is not supported on Cloudflare Workers. Use OAuth (Gmail API) instead.');
 }
 
 export { GOOGLE_SCOPES, HARD_DAILY_SEND_CAP };
