@@ -5,7 +5,7 @@ import { detectLocation, followUpDate, smartCadence, windowStatus, nowIn, tzLabe
 import { buildInsights, buildPlan, scoreContact } from '../lib/coach.js';
 import { configuredProviders, generateWithFallback } from '../lib/llm.js';
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
-import { enqueueCopywritingJob, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft } from '../lib/copywriting.js';
+import { enqueueCopywritingJob, generateStepOnDemand, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft } from '../lib/copywriting.js';
 import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
 import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken } from '../lib/gmail.js';
 import { isEmailSuppressed, rememberSuppression, anonymizeSuppression, normalizedDomain, safeDkimSelector, warmupCap } from '../lib/compliance.js';
@@ -674,6 +674,18 @@ export async function onRequest(context) {
         try {
           const result = await regenerateStep(env, db(), id, stepNumber);
           return json({ ok: true, needs_review: result.needs_review, draft: result.draft });
+        } catch (e) {
+          const message = String(e?.message || e).slice(0, 200);
+          return json({ error: message }, /no llm provider|quota|PUBLIC_APP_URL/i.test(message) ? 503 : 400);
+        }
+      }
+      if (p2 === "copywriting" && p3 === "generate-step" && method === "POST") {
+        const b = await readBody(request);
+        const stepNumber = Number(b.step_number);
+        if (!Number.isInteger(stepNumber) || stepNumber < 1 || stepNumber > 4) return json({ error: "step_number must be 1 to 4" }, 400);
+        try {
+          const result = await generateStepOnDemand(env, db(), id, stepNumber);
+          return json({ ok: true, needs_review: result.needs_review, all_ready: result.all_ready, drafts_count: result.drafts_count, draft: result.draft });
         } catch (e) {
           const message = String(e?.message || e).slice(0, 200);
           return json({ error: message }, /no llm provider|quota|PUBLIC_APP_URL/i.test(message) ? 503 : 400);

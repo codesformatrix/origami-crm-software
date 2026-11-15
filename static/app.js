@@ -577,7 +577,8 @@ async function renderContact(id) {
   const copywritingPanel = `<div class="panel" id="copywriting"><div class="row"><h3 style="margin:0">Prewritten email sequence</h3><span class="sp"></span>${d.copywriting ? badge(d.copywriting.status === 'ready' ? 'replied' : d.copywriting.status === 'needs_review' ? 'due' : 'plain', esc(d.copywriting.status)) : ''}</div>
     <p class="small muted">AI-generated drafts based on saved research. Review and edit every email. Each email is automatically rewritten with the latest research 6 to 12 hours before it sends — paste new posts or news into the research panel anytime and the pre-send refresh picks them up. Nothing sends until you connect Gmail and explicitly schedule the sequence.</p>
     ${d.copywriting ? `<p class="small muted">${esc(d.copywriting.detail || '')}${d.copywriting.error ? ` · ${esc(d.copywriting.error)}` : ''}</p>` : ''}
-    ${!copyDrafts.length ? `<div class="row">${!d.copywriting || ['needs_configuration','failed','completed'].includes(d.copywriting.status) ? `<button class="btn sm" id="queuecopy">Queue four drafts</button>` : ''}${d.copywriting?.status === 'queued' ? `<button class="btn pri sm" id="runcopy">Generate now</button>` : ''}<span id="copywritingmsg" class="small muted"></span></div>` : ''}
+    ${!copyDrafts.length ? `<div class="row">${!d.copywriting || ['needs_configuration','failed','completed'].includes(d.copywriting.status) ? `<button class="btn sm" id="queuecopy">Queue sequence</button>` : ''}${d.copywriting?.status === 'queued' ? `<button class="btn pri sm" id="runcopy">Generate Email 1</button>` : ''}<span id="copywritingmsg" class="small muted"></span></div>` : ''}
+    ${copyDrafts.length < 4 && d.copywriting?.status !== 'scheduled' ? `<div class="row mt"><span class="small muted">Generate each remaining email on demand with fresh context (AI web search + all CRM data):</span><span class="sp"></span><span id="gensteps" class="row"></span></div>` : ''}
     ${copyDrafts.map((draft) => { let breakdown = {}; try { breakdown = JSON.parse(draft.score_breakdown || '{}'); } catch {} return `<form class="card pad-sm mb copy-draft" data-draft-id="${draft.id}" style="box-shadow:none"><div class="row"><b>Email ${draft.step_number}${draft.step_number === 4 ? ' · breakup' : ''}</b><span class="sp"></span>${badge(Number(draft.personalization_score) >= 70 && Number(draft.constraints_valid) === 1 ? 'replied' : 'due', `Score ${draft.personalization_score ?? 'not scored'}/100`)}</div>
       <div class="f one"><div><label>Subject${draft.step_number > 1 ? ' · shared Gmail thread subject' : ''}</label><input name="subject" maxlength="160" value="${esc(draft.subject || '')}" ${draft.status === 'sent' || draft.step_number > 1 ? 'disabled' : ''}></div></div>
       <div class="f one"><div><label>Email body</label><textarea name="body" rows="6" maxlength="8000" ${draft.status === 'sent' ? 'disabled' : ''}>${esc(draft.body || '')}</textarea></div></div>
@@ -753,7 +754,21 @@ async function renderContact(id) {
   const queueCopy = document.getElementById('queuecopy');
   if (queueCopy) queueCopy.onclick = async () => { queueCopy.disabled = true; try { await post(`contacts/${id}/copywriting/queue`, {}); toast('Copywriting queued'); route(); } catch (err) { toast(err.message); queueCopy.disabled = false; } };
   const runCopy = document.getElementById('runcopy');
-  if (runCopy) runCopy.onclick = async () => { runCopy.disabled = true; runCopy.textContent = 'Generating…'; try { await post('copywriting/run', {}); toast('Copywriting finished'); route(); } catch (err) { toast(err.message); runCopy.disabled = false; } };
+  if (runCopy) runCopy.onclick = async () => { runCopy.disabled = true; runCopy.textContent = 'Generating…'; try { await post('copywriting/generate-step', { step_number: 1 }); toast('Email 1 generated with fresh context'); route(); } catch (err) { toast(err.message); runCopy.disabled = false; runCopy.textContent = 'Generate Email 1'; } };
+  // Per-step generation buttons for remaining emails
+  const genStepsEl = document.getElementById('gensteps');
+  if (genStepsEl && copyDrafts.length < 4) {
+    const existingSteps = new Set(copyDrafts.map((d) => Number(d.step_number)));
+    for (let s = 1; s <= 4; s++) {
+      if (existingSteps.has(s)) continue;
+      const btn = document.createElement('button');
+      btn.className = 'btn sm';
+      btn.textContent = `Generate Email ${s}`;
+      btn.dataset.step = String(s);
+      btn.onclick = async () => { btn.disabled = true; btn.textContent = 'Generating…'; try { await post('copywriting/generate-step', { step_number: s }); toast(`Email ${s} generated with fresh context`); route(); } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = `Generate Email ${s}`; } };
+      genStepsEl.appendChild(btn);
+    }
+  }
   appEl.querySelectorAll('.copy-draft').forEach((form) => { form.onsubmit = async (e) => { e.preventDefault(); const button = form.querySelector('button[type=submit]'); const msg = form.querySelector('[data-draft-message]'); button.disabled = true; msg.textContent = 'Saving and rescoring…'; try { await put('email-drafts/' + form.dataset.draftId, formObject(form)); toast('Draft saved and rescored'); route(); } catch (err) { msg.textContent = err.message; button.disabled = false; } }; });
   const scheduleCopy = document.getElementById('schedulecopy');
   if (scheduleCopy && !scheduleCopy.disabled && d.copywriting?.status !== 'scheduled') scheduleCopy.onclick = async () => { scheduleCopy.disabled = true; const sequenceId=Number(document.getElementById('copy-sequence')?.value)||null; try { await post(`contacts/${id}/copywriting/schedule`, { sequence_id:sequenceId, use_default:!sequenceId }); toast('Sequence added to the Gmail queue with business-day scheduling.'); route(); } catch (err) { toast(err.message); scheduleCopy.disabled = false; } };
