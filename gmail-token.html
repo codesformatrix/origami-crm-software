@@ -17,43 +17,49 @@
   label { font-weight: 600; font-size: 14px; }
   .muted { color: #888; font-size: 14px; }
   a { color: #4285f4; }
+  .url-box { font-family: monospace; font-size: 13px; background: #f0f0ff; padding: 10px; border-radius: 6px; word-break: break-all; }
 </style>
 </head>
 <body>
 
 <h1>Gmail Refresh Token Helper</h1>
 
-<div class="panel">
+<div id="status"></div>
+
+<div id="setup" class="panel">
   <p class="muted">This page connects to your Google account and generates a refresh token for the CRM.
-  You'll paste it into the CRM Settings later. Nothing is stored — this page only runs in your browser.
-  Get your Client ID and Secret from <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console → Credentials → Web application</a>.</p>
+  You'll paste it into the CRM Settings later. Get your Client ID and Secret from
+  <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console → Credentials → Web application</a>.</p>
 
-  <div id="status"></div>
+  <label>Client ID</label>
+  <input id="clientId" placeholder="xxxx.apps.googleusercontent.com">
 
-  <div id="setup">
-    <label>Client ID</label>
-    <input id="clientId" placeholder="xxxx.apps.googleusercontent.com">
+  <label>Client Secret</label>
+  <input id="clientSecret" type="password" placeholder="Google OAuth Client Secret">
 
-    <label>Client Secret</label>
-    <input id="clientSecret" type="password" placeholder="Google OAuth Client Secret">
+  <label>Your Gmail email</label>
+  <input id="email" placeholder="you@gmail.com">
 
-    <label>Your Gmail email</label>
-    <input id="email" placeholder="you@gmail.com">
+  <p style="margin-top:16px">
+    <button id="btn">Connect Gmail</button>
+  </p>
 
-    <p style="margin-top:16px">
-      <button id="btn">Connect Gmail</button>
-    </p>
+  <div id="redirectInfo" style="display:none;margin-top:16px">
+    <p class="muted"><b>Step 1:</b> Register this exact URL as an authorized redirect in Google Cloud Console:</p>
+    <div class="url-box" id="redirectUrl"></div>
+    <p style="margin-top:8px"><a href="https://console.cloud.google.com/apis/credentials" target="_blank">Open Google Cloud Console →</a></p>
+    <p style="margin-top:16px"><button id="goBtn">I've added the URL — Connect Gmail</button></p>
   </div>
+</div>
 
-  <div id="result" style="display:none">
-    <h3>✅ Success!</h3>
-    <p>Copy the <b>refresh_token</b> below and paste it into the CRM:</p>
-    <p><b>Settings → Gmail → "Or paste an OAuth refresh token"</b></p>
-    <label>Refresh Token (ya29...)</label>
-    <div class="token" id="refreshToken"></div>
-    <p style="margin-top:12px"><button id="copyBtn">Copy Refresh Token</button></p>
-    <p id="copied" style="display:none;color:#080" class="ok">Copied! Paste it into the CRM now.</p>
-  </div>
+<div id="result" class="panel" style="display:none">
+  <h3>✅ Success!</h3>
+  <p>Copy the <b>refresh_token</b> below and paste it into the CRM:</p>
+  <p><b>Settings → Gmail → "Or paste an OAuth refresh token"</b></p>
+  <label>Refresh Token (ya29...)</label>
+  <div class="token" id="refreshToken"></div>
+  <p style="margin-top:12px"><button id="copyBtn">Copy Refresh Token</button></p>
+  <p id="copied" style="display:none;color:#080" class="ok">Copied! Paste it into the CRM now.</p>
 </div>
 
 <div class="panel">
@@ -70,54 +76,73 @@ const SCOPES = [
   'https://www.googleapis.com/auth/gmail.metadata',
 ];
 
-let popup = null;
+// On page load, check if we have a code from Google's redirect
+const params = new URLSearchParams(window.location.search);
+const code = params.get('code');
+const error = params.get('error');
 
-document.getElementById('btn').onclick = async function() {
+if (code) {
+  exchangeCode(code);
+} else if (error) {
+  document.getElementById('status').innerHTML = '<div class="err">Google returned error: ' + esc(error) + ' — ' + esc(params.get('error_description') || '') + '</div>';
+}
+
+function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+document.getElementById('btn').onclick = function() {
   const clientId = document.getElementById('clientId').value.trim();
   const clientSecret = document.getElementById('clientSecret').value.trim();
   const email = document.getElementById('email').value.trim();
   const status = document.getElementById('status');
 
-  if (!clientId || !clientSecret) { status.innerHTML = '<div class="err">Please enter Client ID and Client Secret</div>'; return; }
-  if (!email) { status.innerHTML = '<div class="err">Please enter your Gmail email address</div>'; return; }
+  if (!clientId || !clientSecret) {
+    status.innerHTML = '<div class="err">Please enter Client ID and Client Secret</div>';
+    return;
+  }
+  if (!email) {
+    status.innerHTML = '<div class="err">Please enter your Gmail email address</div>';
+    return;
+  }
 
-  status.innerHTML = '<p>Opening Google consent screen in a popup…</p>';
+  // Show the redirect URL the user needs to register
+  const redirectUrl = window.location.origin + window.location.pathname;
+  document.getElementById('redirectUrl').textContent = redirectUrl;
+  document.getElementById('redirectInfo').style.display = 'block';
+  status.innerHTML = '<p>First, register the redirect URL above in Google Cloud Console, then click the button below.</p>';
+};
+
+document.getElementById('goBtn').onclick = function() {
+  const clientId = document.getElementById('clientId').value.trim();
+  const clientSecret = document.getElementById('clientSecret').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const redirectUrl = window.location.origin + window.location.pathname;
 
   const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   authUrl.searchParams.set('client_id', clientId);
-  authUrl.searchParams.set('redirect_uri', 'postmessage');
+  authUrl.searchParams.set('redirect_uri', redirectUrl);
   authUrl.searchParams.set('response_type', 'code');
   authUrl.searchParams.set('scope', SCOPES.join(' '));
   authUrl.searchParams.set('access_type', 'offline');
   authUrl.searchParams.set('prompt', 'consent');
   authUrl.searchParams.set('state', email);
 
-  popup = window.open(authUrl.toString(), 'gauth', 'width=600,height=700');
-  if (!popup) {
-    status.innerHTML = '<div class="err">Popup blocked. Please allow popups for this page and try again.</div>';
-    return;
-  }
-
-  window.addEventListener('message', handleMessage);
+  document.getElementById('status').innerHTML = '<p>Redirecting to Google… if nothing happens, <a href="' + authUrl.toString() + '">click here</a>.</p>';
+  window.location.href = authUrl.toString();
 };
-
-function handleMessage(event) {
-  if (event.origin !== 'https://developers.google.com') return;
-  const data = event.data;
-  if (!data || !data.code) return;
-
-  window.removeEventListener('message', handleMessage);
-  if (popup) popup.close();
-
-  exchangeCode(data.code);
-}
 
 async function exchangeCode(code) {
   const status = document.getElementById('status');
   status.innerHTML = '<p>Exchanging authorization code for tokens…</p>';
 
-  const clientId = document.getElementById('clientId').value.trim();
-  const clientSecret = document.getElementById('clientSecret').value.trim();
+  // Read credentials from localStorage (saved before redirect)
+  const clientId = localStorage.getItem('gtoken_client_id') || '';
+  const clientSecret = localStorage.getItem('gtoken_client_secret') || '';
+  const redirectUrl = localStorage.getItem('gtoken_redirect_url') || (window.location.origin + window.location.pathname);
+
+  if (!clientId || !clientSecret) {
+    status.innerHTML = '<div class="err">Credentials not found. Please go back, fill in the form, and click Connect again.</div>';
+    return;
+  }
 
   try {
     const resp = await fetch('https://oauth2.googleapis.com/token', {
@@ -127,14 +152,14 @@ async function exchangeCode(code) {
         code: code,
         client_id: clientId,
         client_secret: clientSecret,
-        redirect_uri: 'postmessage',
+        redirect_uri: redirectUrl,
         grant_type: 'authorization_code',
       }),
     });
 
     const tokens = await resp.json();
     if (tokens.error) {
-      status.innerHTML = '<div class="err">Token exchange failed: ' + (tokens.error_description || tokens.error) + '</div>';
+      status.innerHTML = '<div class="err">Token exchange failed: ' + esc(tokens.error_description || tokens.error) + '</div>';
       return;
     }
 
@@ -143,8 +168,38 @@ async function exchangeCode(code) {
     document.getElementById('status').style.display = 'none';
     document.getElementById('result').style.display = 'block';
   } catch (e) {
-    status.innerHTML = '<div class="err">Request failed: ' + e.message + '</div>';
+    status.innerHTML = '<div class="err">Request failed: ' + esc(e.message) + '</div>';
   }
+}
+
+// Save credentials before redirecting
+const _origGo = document.getElementById('goBtn');
+if (_origGo) {
+  _origGo.onclick = function() {
+    const clientId = document.getElementById('clientId').value.trim();
+    const clientSecret = document.getElementById('clientSecret').value.trim();
+    const redirectUrl = window.location.origin + window.location.pathname;
+    localStorage.setItem('gtoken_client_id', clientId);
+    localStorage.setItem('gtoken_client_secret', clientSecret);
+    localStorage.setItem('gtoken_redirect_url', redirectUrl);
+    // Call original handler
+    document.getElementById('goBtn').onclick = function() {
+      const cId = document.getElementById('clientId').value.trim();
+      const cSecret = document.getElementById('clientSecret').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const rUrl = window.location.origin + window.location.pathname;
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', cId);
+      authUrl.searchParams.set('redirect_uri', rUrl);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', SCOPES.join(' '));
+      authUrl.searchParams.set('access_type', 'offline');
+      authUrl.searchParams.set('prompt', 'consent');
+      authUrl.searchParams.set('state', email);
+      window.location.href = authUrl.toString();
+    };
+    this.onclick();
+  };
 }
 
 document.getElementById('copyBtn').onclick = function() {
