@@ -9,17 +9,12 @@ Usage:
     export GOOGLE_OAUTH_CLIENT_SECRET='your-client-secret'
     python3 get-gmail-token.py
 
-It will:
-1. Start a local server on port 39999
-2. Open Google's consent screen in your browser
-3. Capture the authorization code from the redirect
-4. Exchange it for a refresh token
-5. Print the refresh token for you to paste into the CRM
-
 IMPORTANT: Before running, make sure:
 - You've added yourself as a test user in Google Cloud Console
   (OAuth consent screen → Test users → + Add users → your email)
 - You've enabled the Gmail API in your Google Cloud project
+- You've added the redirect URI to your OAuth client:
+  http://127.0.0.1:39999/callback
 """
 
 import http.server
@@ -42,7 +37,7 @@ if not CLIENT_ID or not CLIENT_SECRET:
     sys.exit(1)
 
 REDIRECT_PORT = 39999
-REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
+REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -103,9 +98,13 @@ def main():
     print("\nMake sure you've added yourself as a test user in Google Cloud Console:")
     print("  https://console.cloud.google.com/apis/credentials/consent")
     print("  → Test users → + Add users → your email")
+    print("\nAnd the redirect URI is added to your OAuth client:")
+    print("  https://console.cloud.google.com/apis/credentials")
+    print("  → Click your Web application client → Authorized redirect URIs")
+    print(f"  → Add: {REDIRECT_URI}")
     print("\nStarting local server...")
 
-    server = http.server.HTTPServer(("localhost", REDIRECT_PORT), CallbackHandler)
+    server = http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), CallbackHandler)
 
     auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
     params = urllib.parse.urlencode({
@@ -114,10 +113,10 @@ def main():
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
     })
     full_url = f"{auth_url}?{params}"
 
+    print(f"\nAuth URL: {full_url}")
     print(f"\nOpening Google consent screen in your browser...\n")
     try:
         webbrowser.open(full_url)
