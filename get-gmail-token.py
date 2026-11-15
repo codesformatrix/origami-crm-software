@@ -1,31 +1,24 @@
 #!/usr/bin/env python3
 """
-Get a Gmail OAuth refresh token by running this on YOUR computer.
+Get a Gmail OAuth refresh token - no local server needed.
 
-Requirements: Python 3.6+ (most computers have it)
+Requirements: Python 3.6+
 
-Usage:
-    export GOOGLE_OAUTH_CLIENT_ID='your-client-id.apps.googleusercontent.com'
-    export GOOGLE_OAUTH_CLIENT_SECRET='your-client-secret'
-    python3 get-gmail-token.py
-
-IMPORTANT: Before running, make sure:
-- You've added yourself as a test user in Google Cloud Console
-  (OAuth consent screen → Test users → + Add users → your email)
-- You've enabled the Gmail API in your Google Cloud project
-- You've added the redirect URI to your OAuth client:
-  http://127.0.0.1:39999/callback
+Flow:
+1. Script prints an auth URL
+2. Open it in your browser, pick your Google account, click Allow
+3. Google redirects to http://127.0.0.1:39999/callback?code=... (page won't load)
+4. Copy the FULL address from the browser address bar
+5. Paste it back into the terminal when prompted
+6. Script exchanges it for a refresh token and prints it
 """
 
-import http.server
-import webbrowser
 import urllib.parse
 import urllib.request
 import sys
 import os
 import json
 
-# Get credentials from environment variables
 CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
 if not CLIENT_ID or not CLIENT_SECRET:
@@ -36,75 +29,17 @@ if not CLIENT_ID or not CLIENT_SECRET:
     print("  python3 get-gmail-token.py")
     sys.exit(1)
 
-REDIRECT_PORT = 39999
-REDIRECT_URI = f"http://127.0.0.1:{REDIRECT_PORT}/callback"
+REDIRECT_URI = "http://127.0.0.1:39999/callback"
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.metadata",
 ]
 
-code_holder = {"code": None, "error": None}
-
-class CallbackHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        if parsed.path == "/callback":
-            code = params.get("code", [None])[0]
-            error = params.get("error", [None])[0]
-
-            if error:
-                code_holder["error"] = error
-                desc = params.get("error_description", [""])[0]
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(
-                    f"<html><body style='font-family:sans-serif;padding:40px'>"
-                    f"<h2>Error</h2><p>{error}</p><p>{desc}</p>"
-                    f"<p>Close this tab and go back to the terminal.</p></body></html>".encode()
-                )
-                self.server.shutdown()
-                return
-
-            if code:
-                code_holder["code"] = code
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(
-                    b"<html><body style='font-family:sans-serif;padding:40px'>"
-                    b"<h2>Authorization received!</h2>"
-                    b"<p>You can close this tab and go back to the terminal.</p>"
-                    b"</body></html>"
-                )
-                self.server.shutdown()
-                return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        pass  # suppress logs
-
 def main():
     print("\n" + "=" * 60)
-    print("  Gmail OAuth Refresh Token Helper")
+    print("  Gmail OAuth Refresh Token Helper (No Server)")
     print("=" * 60)
-    print(f"\nClient ID:    {CLIENT_ID}")
-    print(f"Redirect URI: {REDIRECT_URI}")
-    print("\nMake sure you've added yourself as a test user in Google Cloud Console:")
-    print("  https://console.cloud.google.com/apis/credentials/consent")
-    print("  → Test users → + Add users → your email")
-    print("\nAnd the redirect URI is added to your OAuth client:")
-    print("  https://console.cloud.google.com/apis/credentials")
-    print("  → Click your Web application client → Authorized redirect URIs")
-    print(f"  → Add: {REDIRECT_URI}")
-    print("\nStarting local server...")
-
-    server = http.server.HTTPServer(("127.0.0.1", REDIRECT_PORT), CallbackHandler)
 
     auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
     params = urllib.parse.urlencode({
@@ -113,31 +48,48 @@ def main():
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
+        "prompt": "consent",
     })
     full_url = f"{auth_url}?{params}"
 
-    print(f"\nAuth URL: {full_url}")
-    print(f"\nOpening Google consent screen in your browser...\n")
-    try:
-        webbrowser.open(full_url)
-    except Exception:
-        print("Could not open browser automatically. Copy this URL and open it manually:")
-        print(full_url)
+    print(f"\n📋 Copy this URL and open it in your browser:\n")
+    print(f"  {full_url}\n")
+    print(f"\nSteps:")
+    print(f"  1. Open the URL above in your browser")
+    print(f"  2. Pick your Google account (aliasgar982692@gmail.com)")
+    print(f"  3. Click 'Allow' on the permission screen")
+    print(f"  4. You'll be redirected to a page that won't load")
+    print(f"  5. Copy the FULL address from the browser address bar")
+    print(f"  6. Come back here and paste it\n")
 
-    print("Waiting for you to complete authorization...\n")
-    server.handle_request()
+    redirect_url = input("Paste the full browser address here: ").strip()
 
-    if code_holder["error"]:
-        print(f"\n❌ Google returned error: {code_holder['error']}")
-        print("   Make sure you are a test user and the Gmail API is enabled.")
+    if not redirect_url:
+        print("\n❌ No URL provided.")
         sys.exit(1)
 
-    code = code_holder["code"]
+    # Parse the code from the redirect URL
+    parsed = urllib.parse.urlparse(redirect_url)
+    qparams = urllib.parse.parse_qs(parsed.query)
+
+    code = qparams.get("code", [None])[0]
+    error = qparams.get("error", [None])[0]
+
+    if error:
+        print(f"\n❌ Google returned error: {error}")
+        desc = qparams.get("error_description", [""])[0]
+        if desc:
+            print(f"   {desc}")
+        sys.exit(1)
+
     if not code:
-        print("\n❌ No authorization code received.")
+        print("\n❌ No authorization code found in the URL.")
+        print("   Make sure you pasted the FULL address including ?code=...")
+        print(f"\n   The URL should start with: {REDIRECT_URI}?code=")
         sys.exit(1)
 
-    print("\n🔄 Exchanging authorization code for tokens...\n")
+    print(f"\n🔄 Code captured! Exchanging for tokens...\n")
+
     token_data = urllib.parse.urlencode({
         "code": code,
         "client_id": CLIENT_ID,
