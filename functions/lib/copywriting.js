@@ -366,7 +366,7 @@ export async function enqueueCopywritingJob(DB, contactId, publicOrigin = '') {
   if (Number(existingDrafts?.n || 0) >= 4) return { queued: false, reason: 'drafts_exist' };
 
   // Check for company context
-  const enriched = await DB.prepare('SELECT c.company_name, c.description, c.what_they_do, c.recent_news, c.niche FROM contacts ct JOIN companies c ON c.id=ct.company_id WHERE ct.id=?').bind(contactId).first();
+  const enriched = await DB.prepare('SELECT c.name AS company_name, c.what_they_do AS description, c.what_they_do, c.recent_news, c.sub_niche AS niche FROM contacts ct JOIN companies c ON c.id=ct.company_id WHERE ct.id=?').bind(contactId).first();
   if (!enriched || !(enriched.description || enriched.what_they_do || enriched.company_name)) {
     return { queued: false, reason: 'research_required' };
   }
