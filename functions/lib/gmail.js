@@ -903,7 +903,7 @@ export async function saveManualToken(env, DB, refreshToken, emailAddress) {
   // The sandbox has no outbound internet, so we skip the live token exchange here.
   // We store the token and let the next send attempt validate it at that point.
   await DB.prepare("UPDATE gmail_connections SET status='connected',email_address=?,connection_type='oauth',access_token_enc='',refresh_token_enc=?,access_expires_at=?,last_error='',connected_at=?,updated_at=? WHERE id=1")
-    .bind(emailAddress || '', encrypt(env, refreshToken), isoNow(addMs(new Date(), 3600 * 1000)), isoNow(), isoNow()).run();
+    .bind(emailAddress || '', await encrypt(env, refreshToken), isoNow(addMs(new Date(), 3600 * 1000)), isoNow(), isoNow()).run();
   return { connected: true, email_address: emailAddress || 'verified', connection_type: 'oauth' };
 }
 
