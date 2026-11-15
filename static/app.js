@@ -1094,12 +1094,33 @@ async function renderSettings() {
     <span class="small muted">${gmailStatus.connection_type === 'smtp' ? 'SMTP connection active' : ''}</span></div>
     </details></div>
     <div class="mt" style="border-top:1px solid var(--line);padding-top:12px">
-    <details><summary class="small" style="cursor:pointer">Or paste an OAuth refresh token</summary>
-    <p class="small muted">If the OAuth consent screen gives a 403, run the token helper script on your own computer (which has internet access), then paste the REFRESH_TOKEN here. <a href="https://github.com/codesformatrix/origami-crm-software/blob/main/get-gmail-token.mjs" target="_blank" rel="noopener">Script instructions ↓</a></p>
-    <div class="f one"><div><label>Gmail email address</label><input id="token-email" type="email" placeholder="you@gmail.com"></div></div>
-    <div class="f one"><div><label>Refresh token</label><textarea id="token-value" rows="3" placeholder="ya29.... (long refresh token)"></textarea></div></div>
-    <div class="row"><button class="btn pri" id="gmail-token-save">Save & Connect</button>
-    <span class="small muted">Token is verified against Google and stored encrypted.</span></div>
+    <details id="tokenhelper"><summary class="small" style="cursor:pointer">🔑 Get Gmail refresh token (if OAuth consent screen is blocked)</summary>
+    <p class="small muted">If clicking "Connect Gmail" gives a 403, use this built-in helper to get a refresh token. It redirects to Google, then brings you back with the token.</p>
+    <div class="f">
+      <div><label>Client ID</label><input id="th-client-id" placeholder="xxxx.apps.googleusercontent.com"></div>
+      <div><label>Client Secret</label><input id="th-client-secret" type="password" placeholder="Google OAuth Client Secret"></div>
+      <div><label>Gmail email</label><input id="th-email" type="email" placeholder="you@gmail.com"></div>
+    </div>
+    <div class="row">
+      <button class="btn pri" id="th-step1">Connect Gmail</button>
+      <span class="small muted" id="th-status"></span>
+    </div>
+    <div id="th-step2" style="display:none;margin-top:12px">
+      <p class="small muted"><b>Step 1:</b> Register this exact URL in Google Cloud Console → Credentials → your OAuth client → Authorized redirect URLs:</p>
+      <div class="small" style="font-family:monospace;background:var(--line);padding:8px;border-radius:4px;word-break:break-all" id="th-redirect-url"></div>
+      <p style="margin-top:8px"><a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Open Google Cloud Console →</a></p>
+      <div class="row" style="margin-top:12px">
+        <button class="btn pri" id="th-step2-btn">I've added the URL — Connect Gmail</button>
+      </div>
+    </div>
+    <div id="th-result" style="display:none;margin-top:12px">
+      <p class="ok" style="color:var(--ok)">✅ Token received! Copy it below:</p>
+      <div style="font-family:monospace;font-size:12px;background:var(--line);padding:10px;border-radius:4px;word-break:break-all" id="th-token"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn pri" id="th-copy">Copy Refresh Token</button>
+        <span class="small muted" id="th-copied" style="display:none;color:var(--ok)">Copied! Now paste it above and click Save & Connect.</span>
+      </div>
+    </div>
     </details></div>
     <p class="small muted">Safety: at most one send per 10-minute worker run, no more than the configured daily cap or 500 per UTC day, and only 9:00–11:00 local time Monday–Thursday. No randomized timing to disguise automation. Human replies stop remaining emails; dated out-of-office replies pause and reschedule after the return date.</p>
     <p class="small muted">Google’s <code>gmail.readonly</code> scope is restricted. Public production use may require Google verification and a security assessment. OAuth apps left in Testing can issue refresh tokens that expire after seven days.</p>
@@ -1233,6 +1254,72 @@ async function renderSettings() {
     tokenSave.disabled = true; tokenSave.textContent = 'Verifying…';
     try { const r = await post('gmail/token/save', { refresh_token: token, email_address: email }); toast('Gmail connected (' + (r.email_address || 'verified') + ')'); route(); }
     catch (err) { toast(err.message); tokenSave.disabled = false; tokenSave.textContent = 'Save & Connect'; }
+  };
+  // Token helper step 1: show redirect URL
+  const thStep1 = document.getElementById('th-step1');
+  if (thStep1) thStep1.onclick = function() {
+    const cid = document.getElementById('th-client-id').value.trim();
+    const csec = document.getElementById('th-client-secret').value.trim();
+    const email = document.getElementById('th-email').value.trim();
+    const status = document.getElementById('th-status');
+    if (!cid || !csec) { status.textContent = 'Enter Client ID and Client Secret'; return; }
+    if (!email) { status.textContent = 'Enter your Gmail email'; return; }
+    localStorage.setItem('th_client_id', cid);
+    localStorage.setItem('th_client_secret', csec);
+    localStorage.setItem('th_email', email);
+    localStorage.setItem('th_redirect', window.location.origin + window.location.pathname);
+    const rurl = window.location.origin + window.location.pathname;
+    document.getElementById('th-redirect-url').textContent = rurl;
+    document.getElementById('th-step2').style.display = 'block';
+    status.textContent = 'Register the URL above in Google Cloud Console, then click the button below.';
+  };
+  // Token helper step 2: redirect to Google
+  const thStep2 = document.getElementById('th-step2-btn');
+  if (thStep2) thStep2.onclick = function() {
+    const cid = localStorage.getItem('th_client_id');
+    const email = localStorage.getItem('th_email');
+    const rurl = localStorage.getItem('th_redirect');
+    if (!cid) { toast('Fill in the form first'); return; }
+    const u = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    u.searchParams.set('client_id', cid);
+    u.searchParams.set('redirect_uri', rurl);
+    u.searchParams.set('response_type', 'code');
+    u.searchParams.set('scope', 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.metadata');
+    u.searchParams.set('access_type', 'offline');
+    u.searchParams.set('prompt', 'consent');
+    u.searchParams.set('state', email);
+    window.location.href = u.toString();
+  };
+  // Token helper: handle callback from Google
+  const thParams = new URLSearchParams(window.location.search);
+  const thCode = thParams.get('code');
+  const thErr = thParams.get('error');
+  if (thCode) {
+    const cid = localStorage.getItem('th_client_id');
+    const csec = localStorage.getItem('th_client_secret');
+    const rurl = localStorage.getItem('th_redirect');
+    if (cid && csec) {
+      fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ code: thCode, client_id: cid, client_secret: csec, redirect_uri: rurl, grant_type: 'authorization_code' }),
+      }).then(r => r.json()).then(tokens => {
+        if (tokens.error) { document.getElementById('th-status').textContent = 'Token exchange failed: ' + (tokens.error_description || tokens.error); return; }
+        document.getElementById('th-token').textContent = tokens.refresh_token;
+        document.getElementById('th-step2').style.display = 'none';
+        document.getElementById('th-result').style.display = 'block';
+        // Auto-fill the save field
+        const tv = document.getElementById('token-value');
+        if (tv) tv.value = tokens.refresh_token;
+      }).catch(e => { document.getElementById('th-status').textContent = 'Request failed: ' + e.message; });
+    }
+  }
+  if (thErr) { document.getElementById('th-status').textContent = 'Google error: ' + thErr; }
+  // Copy button
+  const thCopy = document.getElementById('th-copy');
+  if (thCopy) thCopy.onclick = function() {
+    const text = document.getElementById('th-token').textContent;
+    navigator.clipboard.writeText(text).then(() => { document.getElementById('th-copied').style.display = 'inline'; });
   };
   get('gmail/log').then((log) => {
     const box = document.getElementById('gmail-send-log'); if (!box) return;
