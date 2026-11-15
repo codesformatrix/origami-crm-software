@@ -3,7 +3,6 @@
 import { generateWithFallback } from './llm.js';
 import { reserveQuota } from './enrichment.js';
 import { isEmailSuppressed, rememberSuppression, warmupCap, deceptiveSubjectReason } from './compliance.js';
-import tls from 'tls';
 
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
@@ -936,7 +935,8 @@ export async function smtpDisconnect(env, DB) {
   return { disconnected: true };
 }
 
-function smtpTestConnection(email, password) {
+async function smtpTestConnection(email, password) {
+  const { default: tls } = await import('tls');
   return new Promise((resolve, reject) => {
     const socket = tls.connect({ host: 'smtp.gmail.com', port: 587, servername: 'smtp.gmail.com' }, () => {
       sendCmd(socket, 'EHLO origami.local', (resp) => {
@@ -986,6 +986,7 @@ function sendCmd(socket, cmd, callback) {
 }
 
 async function smtpSendMessage(email, password, fromEmail, to, subject, body, replyHeaders) {
+  const { default: tls } = await import('tls');
   const message = mimeMessage({ fromName: 'Origami Consulting', fromEmail, to, subject, body, replyHeaders });
   const raw = base64Text(message);
   return new Promise((resolve, reject) => {
