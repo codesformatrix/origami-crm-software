@@ -1,0 +1,16 @@
+name: Cron Trigger
+
+on:
+  schedule:
+    # Runs every 10 minutes (UTC). Cloudflare cron ticks are every 10 min.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  hit-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger origami-crm /api/cron
+        run: |
+          curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+            "https://4576e31c.origami-crm-software.pages.dev/api/cron"
