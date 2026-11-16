@@ -1,5 +1,6 @@
 import { generateWithFallback } from './llm.js';
 import { isEmailSuppressed } from './compliance.js';
+import { logStep } from './steplog.js';
 
 const MAX_HOURLY = 10;
 const nowIso = () => new Date().toISOString();
@@ -457,6 +458,7 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
     if (!draft) throw new Error('All generation attempts failed');
 
     await storeDrafts(DB, contactId, [draft], nowIso());
+    await logStep(DB, contactId, stepNumber, 'drafted', `Email ${stepNumber} drafted. Score ${draft.scoring.score}.`, '', 'copywriting');
 
     const updated = await DB.prepare('SELECT * FROM email_drafts WHERE contact_id=? AND step_number=?').bind(contactId, stepNumber).first();
     const needsReview = Number(updated.personalization_score) < 70 || Number(updated.constraints_valid) !== 1;
@@ -521,12 +523,14 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
         try {
           await scheduleCopywriting(DB, row.contact_id, { use_default: true });
           await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,detail='All 4 emails generated and auto-scheduled',finished_at=?,updated_at=? WHERE contact_id=?").bind(nowIso(), nowIso(), row.contact_id).run();
+          await logStep(DB, row.contact_id, 0, 'scheduled', 'All 4 emails generated and auto-scheduled by copywriting batch.', '', 'copywriting');
           results.push({ contact_id: row.contact_id, status: 'scheduled', generated });
         } catch (e) {
           // Scheduling failed (e.g. Gmail not connected, missing timezone) — mark as ready for manual review
           const smsg = String(e?.message || e).slice(0, 500);
           await DB.prepare("UPDATE copywriting_jobs SET status='ready',stage='ready',progress=100,detail=?,error=?,updated_at=? WHERE contact_id=?").bind(
             `All 4 emails generated. Auto-schedule skipped: ${smsg}`, smsg, nowIso(), row.contact_id).run();
+          await logStep(DB, row.contact_id, 0, 'failed', `Auto-schedule skipped: ${smsg}`, smsg, 'copywriting');
           results.push({ contact_id: row.contact_id, status: 'ready', generated, schedule_error: smsg });
         }
       } else {

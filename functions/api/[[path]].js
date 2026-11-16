@@ -459,6 +459,10 @@ export async function onRequest(context) {
       const enrichedToday = Number((await DB.prepare("SELECT COUNT(*) AS n FROM enrichment_jobs WHERE status='completed' AND date(updated_at)=?").bind(digestDate).first())?.n || 0);
       const draftedToday = Number((await DB.prepare("SELECT COUNT(*) AS n FROM email_drafts WHERE date(generated_at)=?").bind(digestDate).first())?.n || 0);
       const repliesToday = Number((await DB.prepare("SELECT COUNT(*) AS n FROM replies WHERE date(received_at)=?").bind(digestDate).first())?.n || 0);
+      // Scheduled next 24h
+      const scheduled24h = Number((await DB.prepare("SELECT COUNT(*) AS n FROM emails WHERE status IN ('scheduled','pending_review','retry_wait') AND scheduled_at>=? AND scheduled_at<=?").bind(digestDate, new Date(Date.now() + 24 * 3600 * 1000).toISOString().slice(0, 10)).first())?.n || 0);
+      // Failed with reason
+      const failedToday = (await DB.prepare("SELECT e.id,e.contact_id,e.last_error,e.status,ct.name AS contact_name,d.step_number FROM emails e JOIN contacts ct ON ct.id=e.contact_id LEFT JOIN email_drafts d ON d.id=e.email_draft_id WHERE date(e.updated_at)=? AND e.status IN ('failed','paused_master','paused_config','paused_reply','paused_domain','paused_timezone') AND e.last_error<>'' ORDER BY e.updated_at DESC LIMIT 20").bind(digestDate).all()).results || [];
       const errorRows = [];
       const enrichmentErrors = (await DB.prepare("SELECT error,updated_at FROM enrichment_jobs WHERE date(updated_at)=? AND error<>'' AND status IN ('failed','needs_configuration') ORDER BY updated_at DESC LIMIT 10").bind(digestDate).all()).results || [];
       for (const row of enrichmentErrors) errorRows.push({ source:'Enrichment', api:providerFromError(row.error,'Enrichment provider'), message:safeErrorSummary(row.error,env), at:row.updated_at });
@@ -468,7 +472,14 @@ export async function onRequest(context) {
       for (const row of sendErrors) errorRows.push({ source:'Sending', api:'Gmail API', message:safeErrorSummary(row.error,env), at:row.attempted_at });
       const replyErrors = (await DB.prepare("SELECT classification_error,received_at FROM replies WHERE date(received_at)=? AND classification_error<>'' ORDER BY received_at DESC LIMIT 10").bind(digestDate).all()).results || [];
       for (const row of replyErrors) errorRows.push({ source:'Reply detection', api:providerFromError(row.classification_error,'LLM provider'), message:safeErrorSummary(row.classification_error,env), at:row.received_at });
-      const dailyDigest = { date:digestDate, enriched:enrichedToday, drafted:draftedToday, sent:messagesSentToday, replies:repliesToday, errors:errorRows.sort((a,b)=>String(b.at).localeCompare(String(a.at))).slice(0,20) };
+      const dailyDigest = { date:digestDate, enriched:enrichedToday, drafted:draftedToday, sent:messagesSentToday, replies:repliesToday, errors:errorRows.sort((a,b)=>String(b.at).localeCompare(String(a.at))).slice(0,20), scheduled_24h:scheduled24h, failed_today:failedToday };
+      // Review mode and global pause status
+      const reviewMode = String((await DB.prepare("SELECT value FROM settings WHERE key='review_mode'").first())?.value || 'off') === 'on';
+      const globalPaused = String((await DB.prepare("SELECT value FROM settings WHERE key='global_pause'").first())?.value || 'off') === 'on';
+      // SPF/DKIM/DMARC status from last check
+      const dnsResultRaw = str((await DB.prepare("SELECT value FROM settings WHERE key='deliverability_dns_result'").first())?.value || '');
+      let dnsStatus = null;
+      try { dnsStatus = dnsResultRaw ? JSON.parse(dnsResultRaw).checks : null; } catch {}
 
       const dueAll = (await DB.prepare(
         "SELECT c.*, co.name AS company_name, co.domain, co.sub_niche, co.hq, co.funding " +
@@ -499,6 +510,7 @@ export async function onRequest(context) {
         sequences_active: Number((sequenceCounts.find((row)=>row.status==='active')||{}).count||0),
         sequences_paused: Number((sequenceCounts.find((row)=>row.status==='paused')||{}).count||0),
         quotas, digest: dailyDigest,
+        review_mode: reviewMode, global_pause: globalPaused, dns_status: dnsStatus,
       } });
     }
 
@@ -695,6 +707,16 @@ export async function onRequest(context) {
         if (!contact) return json({ error: "not found" }, 404);
         return json({ job: await db().prepare("SELECT * FROM copywriting_jobs WHERE contact_id=?").bind(id).first(),
           drafts: (await db().prepare("SELECT * FROM email_drafts WHERE contact_id=? ORDER BY step_number").bind(id).all()).results });
+      }
+      if (p2 === "timeline" && !p3 && method === "GET") {
+        const contact = await db().prepare("SELECT id,name,email,status FROM contacts WHERE id=?").bind(id).first();
+        if (!contact) return json({ error: "not found" }, 404);
+        const drafts = (await db().prepare("SELECT step_number,status,subject,body,hook_used,sources,personalization_score,scheduled_at,sent_at,generated_at FROM email_drafts WHERE contact_id=? ORDER BY step_number").bind(id).all()).results || [];
+        const emails = (await db().prepare("SELECT status,scheduled_at,sent_at,gmail_message_id,last_error FROM emails WHERE contact_id=? ORDER BY id").bind(id).all()).results || [];
+        const replies = (await db().prepare("SELECT classification,raw_text,received_at FROM replies WHERE prospect_id=? ORDER BY received_at DESC").bind(id).all()).results || [];
+        const steps = (await db().prepare("SELECT status,detail,error,component,created_at FROM step_logs WHERE contact_id=? ORDER BY created_at ASC, id ASC").bind(id).all()).results || [];
+        const notes = (await db().prepare("SELECT source_type,source_url,summary,fetched_at FROM research_notes WHERE contact_id=? ORDER BY fetched_at DESC").bind(id).all()).results || [];
+        return json({ contact, drafts, emails, replies, steps, notes });
       }
       if (p2 === "copywriting" && p3 === "queue" && method === "POST") {
         const exists = await db().prepare("SELECT id FROM contacts WHERE id=?").bind(id).first();
@@ -1907,6 +1929,14 @@ export async function onRequest(context) {
           const start = str(b.domain_start);
           if (start && (!/^\d{4}-\d{2}-\d{2}$/.test(start) || start > today())) return json({ error: "warmup start date must be a valid date no later than today" }, 400);
           await set("domain_start", start);
+        }
+        if (b.review_mode !== undefined) {
+          const val = ['on','off'].includes(str(b.review_mode).toLowerCase()) ? str(b.review_mode).toLowerCase() : 'off';
+          await set("review_mode", val);
+        }
+        if (b.global_pause !== undefined) {
+          const val = ['on','off'].includes(str(b.global_pause).toLowerCase()) ? str(b.global_pause).toLowerCase() : 'off';
+          await set("global_pause", val);
         }
         if (b.sending_domain !== undefined) {
           const domain = str(b.sending_domain) ? normalizedDomain(b.sending_domain) : '';

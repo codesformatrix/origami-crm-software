@@ -1,5 +1,6 @@
 import { generateWithFallback } from './llm.js';
 import { enqueueCopywritingJob } from './copywriting.js';
+import { logStep } from './steplog.js';
 
 const MAX_HOURLY = 10;
 const safeJson = async (response) => { try { return await response.json(); } catch { return {}; } };
@@ -392,12 +393,14 @@ export async function runEnrichmentBatch(env, maxJobs = MAX_HOURLY, onlyContactI
       const note = await synthesize(env, DB, contact, company, sourceText);
       await saveNote(DB, contact.id, 'research_synthesis', web.urls[0] || search.urls[0] || '', note, env);
       await progress(DB, contact.id, 'completed', 'complete', 100, 'Enrichment complete; review the research note', '');
+      await logStep(DB, contact.id, 0, 'completed', 'Enrichment completed. Research note saved.', '', 'enrichment');
       results.push({ contact_id: contact.id, status: 'completed', icp_score: note.icp_score });
     } catch (e) {
       const message = String(e?.message || e).slice(0, 800);
       const config = /NO_PROVIDER|configured quota cap reached/i.test(message);
       await progress(DB, contact.id, config ? 'needs_configuration' : 'failed', config ? 'configuration' : 'failed', config ? 100 : 0,
         config ? 'Research requires a configured AI provider or quota availability' : 'Enrichment stopped; use Retry after reviewing provider status', message);
+      await logStep(DB, contact.id, 0, config ? 'needs_configuration' : 'failed', config ? 'Enrichment needs configuration.' : 'Enrichment failed.', message, 'enrichment');
       results.push({ contact_id: contact.id, status: config ? 'needs_configuration' : 'failed' });
     }
   }

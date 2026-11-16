@@ -15,6 +15,7 @@ import { deepResearch } from './search.js';
 import { generateWithFallback } from './llm.js';
 import { windowStatus, zonedToUtc, nextWorkingDay, addDays } from './engine.js';
 import { isEmailSuppressed } from './compliance.js';
+import { logStep, isGlobalPaused, isReviewMode } from './steplog.js';
 
 const MAX_RETRIES = 3;
 const nowIso = () => new Date().toISOString();
@@ -362,11 +363,25 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
     const tz = prospect.timezone;
 
     try {
+      // Log: queued
+      await logStep(DB, contactId, stepNumber, 'queued', `Prospect ${contact.name || contactId} touch ${stepNumber} picked up by orchestrator`, '', 'orchestrator');
+
+      // Global pause check
+      if (await isGlobalPaused(DB)) {
+        await logStep(DB, contactId, stepNumber, 'skipped', 'Global pause is ON. Prospect skipped this tick.', '', 'orchestrator');
+        results.push({ contact_id: contactId, skipped: 'global_pause' });
+        continue;
+      }
+
       // Step 2: Skip if suppressed
       if (await isEmailSuppressed(DB, contact.email)) {
+        await logStep(DB, contactId, stepNumber, 'skipped', 'Prospect email is suppressed.', '', 'orchestrator');
         results.push({ contact_id: contactId, skipped: 'suppressed' });
         continue;
       }
+
+      // Log: researching
+      await logStep(DB, contactId, stepNumber, 'researching', 'Starting fresh research via real search API.', '', 'orchestrator');
 
       // Load full context: CRM record, email history, replies
       const sentDrafts = (await DB.prepare(
@@ -383,6 +398,7 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
 
       // Save sources
       await saveResearchSources(DB, contactId, research);
+      await logStep(DB, contactId, stepNumber, 'researching', `Research complete via ${research.source_api}. ${research.sources?.length || 0} sources saved.`, '', 'orchestrator');
 
       // Build context for the writer
       const unsubscribeUrl = await getOrCreateUnsubscribeUrl(DB, contactId, env.PUBLIC_APP_URL || '');
@@ -395,6 +411,9 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
 
       // Step 4 + 5: Generate with retry (up to 3 times, model switching)
       const genResult = await generateWithRetry(env, DB, contactId, stepNumber, context);
+
+      // Log: drafted
+      await logStep(DB, contactId, stepNumber, 'drafted', `Email ${stepNumber} drafted. Score ${genResult.score}, attempts ${genResult.attempts}. Hook: ${genResult.draft.hook_used || 'n/a'}.`, '', 'orchestrator');
 
       // Store the draft
       await DB.prepare(`
@@ -415,9 +434,13 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
       // Step 6: Compute send time — convert window to UTC, pick random minute
       const sendAt = pickRandomSendTime(prospect.window, tz, { countryKey: contact.country || '', countryCode: contact.country || '' }, now);
 
-      // Mark draft as scheduled
-      await DB.prepare("UPDATE email_drafts SET status='scheduled',scheduled_at=? WHERE contact_id=? AND step_number=?")
-        .bind(sendAt, contactId, stepNumber).run();
+      // Review mode: schedule but hold for approval
+      const reviewOn = await isReviewMode(DB);
+      const effectiveStatus = reviewOn ? 'pending_review' : 'scheduled';
+
+      // Mark draft as scheduled (or pending_review)
+      await DB.prepare("UPDATE email_drafts SET status=?,scheduled_at=? WHERE contact_id=? AND step_number=?")
+        .bind(effectiveStatus, sendAt, contactId, stepNumber).run();
 
       // Step 7: Create email record with idempotency key
       const draftRow = await DB.prepare("SELECT id FROM email_drafts WHERE contact_id=? AND step_number=?").bind(contactId, stepNumber).first();
@@ -425,24 +448,29 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
 
       await DB.prepare(`
         INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,idempotency_key,created_at,updated_at)
-        VALUES(?,?,'scheduled',?,?,?,?)
-      `).bind(draftRow.id, contactId, sendAt, idempotencyKey, nowIso(), nowIso()).run();
+        VALUES(?,?,?,?,?,?,?)
+      `).bind(draftRow.id, contactId, effectiveStatus, sendAt, idempotencyKey, nowIso(), nowIso()).run();
+
+      // Log: scheduled (or pending_review)
+      await logStep(DB, contactId, stepNumber, effectiveStatus, `Email ${stepNumber} ${effectiveStatus === 'pending_review' ? 'held for review' : 'scheduled'} for ${sendAt} (UTC). Window: ${tz}.`, '', 'orchestrator');
 
       // Update copywriting job
-      await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,detail=?,finished_at=?,updated_at=? WHERE contact_id=?")
-        .bind(`Email ${stepNumber} generated with fresh research and scheduled for ${sendAt} (UTC). Window: ${tz}.`, nowIso(), nowIso(), contactId).run();
+      await DB.prepare("UPDATE copywriting_jobs SET status=?,stage=?,progress=100,detail=?,finished_at=?,updated_at=? WHERE contact_id=?")
+        .bind(effectiveStatus, effectiveStatus, `Email ${stepNumber} generated with fresh research and ${effectiveStatus === 'pending_review' ? 'held for review' : 'scheduled'} for ${sendAt} (UTC). Window: ${tz}.`, nowIso(), nowIso(), contactId).run();
 
       results.push({
         contact_id: contactId,
         step: stepNumber,
-        status: 'scheduled',
+        status: effectiveStatus,
         score: genResult.score,
         attempts: genResult.attempts,
         send_at: sendAt,
         research_source: research.source_api,
+        review_mode: reviewOn,
       });
     } catch (e) {
       const msg = String(e?.message || e).slice(0, 300);
+      await logStep(DB, contactId, stepNumber, 'failed', 'Orchestrator failed.', msg, 'orchestrator');
       await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',error=?,updated_at=? WHERE contact_id=?")
         .bind(msg, nowIso(), contactId).run();
       results.push({ contact_id: contactId, step: stepNumber, status: 'failed', error: msg });

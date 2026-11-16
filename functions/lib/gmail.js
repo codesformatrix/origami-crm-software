@@ -3,6 +3,7 @@
 import { generateWithFallback } from './llm.js';
 import { reserveQuota } from './enrichment.js';
 import { isEmailSuppressed, rememberSuppression, warmupCap, deceptiveSubjectReason } from './compliance.js';
+import { logStep, scheduleRetryOrFlag } from './steplog.js';
 
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
@@ -492,6 +493,8 @@ async function appendAttempt(DB, emailId, attemptNo, status, httpStatus, error, 
 async function reserveDaily(DB, now) {
   const paused = await DB.prepare("SELECT value FROM settings WHERE key='master_send_paused'").first();
   if (String(paused?.value || '0') === '1') return { allowed: false, cap: 0, reason: 'master_paused' };
+  const globalPaused = await DB.prepare("SELECT value FROM settings WHERE key='global_pause'").first();
+  if (String(globalPaused?.value || 'off') === 'on') return { allowed: false, cap: 0, reason: 'global_paused' };
   const setting = await DB.prepare("SELECT value FROM settings WHERE key='daily_send_cap'").first();
   const legacy = await DB.prepare("SELECT value FROM settings WHERE key='daily_cap'").first();
   const configured = Math.max(0, Math.min(HARD_DAILY_SEND_CAP, Number(setting?.value ?? 25), Number(legacy?.value ?? 500)));
@@ -748,10 +751,11 @@ export async function runGmailSendBatch(env, now = new Date()) {
   const reservation = await reserveDaily(DB, now);
   if (!reservation.allowed) {
     const pausedByMaster = reservation.reason === 'master_paused';
+    const pausedByGlobal = reservation.reason === 'global_paused';
     await DB.prepare("UPDATE emails SET status=?,last_error=?,updated_at=? WHERE id=?")
-      .bind(pausedByMaster ? 'paused_master' : 'scheduled', pausedByMaster ? 'Master sending pause is enabled' : 'Daily automated send cap reached', isoNow(now), email.id).run();
+      .bind(pausedByMaster ? 'paused_master' : pausedByGlobal ? 'paused_global' : 'scheduled', pausedByMaster ? 'Master sending pause is enabled' : pausedByGlobal ? 'Global pause is enabled' : 'Daily automated send cap reached', isoNow(now), email.id).run();
     await releaseLock(DB, owner);
-    return { status: pausedByMaster ? 'master_paused' : 'daily_cap', processed: 0, cap: reservation.cap };
+    return { status: pausedByMaster ? 'master_paused' : pausedByGlobal ? 'global_paused' : 'daily_cap', processed: 0, cap: reservation.cap };
   }
   const draft = { id: email.email_draft_id, subject: email.subject, body: email.draft_body, step_number: email.step_number, unsubscribe_url: email.unsubscribe_url };
   const contact = { id: email.contact_id, email: email.recipient_email, company_id: email.company_id, cadence: email.cadence, status: email.contact_status };
@@ -846,6 +850,7 @@ export async function runGmailSendBatch(env, now = new Date()) {
     await DB.prepare("UPDATE emails SET status='failed',last_error=?,next_attempt_at=NULL,updated_at=? WHERE id=?").bind(finalError, isoNow(), email.id).run();
     await DB.prepare("UPDATE email_drafts SET status='failed' WHERE id=?").bind(email.email_draft_id).run();
     await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',detail=?,updated_at=? WHERE contact_id=?").bind(finalError,isoNow(),email.contact_id).run();
+    await logStep(DB, email.contact_id, email.step_number, 'failed', 'Gmail send failed after retries.', finalError, 'gmail');
     await releaseLock(DB, owner);
     if (finalStatus === 401 || finalStatus === 403 && /insufficient|scope/i.test(finalError)) await requireReconnect(env, DB, finalError);
     return { status: finalStatus === 429 || retryableQuota(finalStatus, { error: { message: finalError } }) ? 'failed_quota' : 'failed', processed: 1, email_id: email.id };
@@ -853,6 +858,7 @@ export async function runGmailSendBatch(env, now = new Date()) {
   const metadata = await apiFetch(env, DB, `messages/${encodeURIComponent(sent.id)}?format=metadata&metadataHeaders=Message-ID`).then((r) => r.json().catch(() => ({}))).catch(() => ({}));
   const rfcMessageId = rfcHeaderValue(metadata.payload?.headers, 'Message-ID');
   await recordSent(DB, email, draft, contact, sent, rfcMessageId, body, now);
+  await logStep(DB, email.contact_id, email.step_number, 'sent', `Email ${email.step_number} sent via Gmail. Message ID: ${sent.id}.`, '', 'gmail');
   await releaseLock(DB, owner, true, now);
   return { status: 'sent', processed: 1, email_id: email.id, gmail_message_id: sent.id, thread_id: sent.threadId };
 }
