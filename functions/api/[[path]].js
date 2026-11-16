@@ -347,16 +347,30 @@ export async function onRequest(context) {
       const origin = env.PUBLIC_APP_URL || new URL(request.url).origin;
       const runEnv = { ...env, PUBLIC_APP_URL: origin };
       const results = {};
-      // Pre-send refresh: regenerate scheduled emails with fresh AI web search context
+      // Step 1: Auto-enqueue new prospects for enrichment.
+      // Find contacts with status 'new' that have no enrichment job, then enqueue them.
+      try {
+        const newContacts = (await db().prepare(
+          "SELECT c.id FROM contacts c WHERE c.status='new' AND NOT EXISTS (SELECT 1 FROM enrichment_jobs e WHERE e.contact_id=c.id) ORDER BY c.created_at LIMIT 20"
+        ).all()).results || [];
+        for (const row of newContacts) {
+          await enqueueProspect(db(), row.id);
+        }
+        results.enqueued = newContacts.length;
+      } catch (e) { results.enqueue_error = String(e?.message || e).slice(0, 200); }
+      // Step 2: Pre-send refresh: regenerate scheduled emails with fresh AI web search context
       try { results.refresh = await refreshScheduledDrafts(runEnv, db(), now, 2, 12); }
       catch (e) { results.refresh_error = String(e?.message || e).slice(0, 200); }
-      // Copywriting batch: process queued copywriting jobs (generates step 1)
+      // Step 3: Enrichment batch: process queued enrichment jobs
+      try { results.enrichment = await runEnrichmentBatch(runEnv, 10); }
+      catch (e) { results.enrichment_error = String(e?.message || e).slice(0, 200); }
+      // Step 4: Copywriting batch: generate all 4 email steps + auto-schedule
       try { results.copywriting = await runCopywritingBatch(runEnv, 10); }
       catch (e) { results.copywriting_error = String(e?.message || e).slice(0, 200); }
-      // Timezone batch: detect timezones for contacts that still need them
+      // Step 5: Timezone batch: detect timezones for contacts that still need them
       try { results.timezone = await runTimezoneBatch(runEnv, 10); }
       catch (e) { results.timezone_error = String(e?.message || e).slice(0, 200); }
-      // Gmail send batch: pick up due emails and send via Gmail API
+      // Step 6: Gmail send batch: pick up due emails and send via Gmail API
       try { results.gmail = await runGmailSendBatch(runEnv, now); }
       catch (e) { results.gmail_error = String(e?.message || e).slice(0, 200); }
       return json({ ok: true, timestamp: now.toISOString(), ...results });

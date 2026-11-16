@@ -456,9 +456,46 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
     const row = await DB.prepare("SELECT contact_id,unsubscribe_url FROM copywriting_jobs WHERE status='queued' ORDER BY queued_at,contact_id LIMIT 1").first();
     if (!row) { await releaseSlot(DB); break; }
     try {
-      // Generate step 1 only — user clicks for each subsequent step
-      const result = await generateStepOnDemand(env, DB, row.contact_id, 1);
-      results.push({ contact_id: row.contact_id, step: 1, status: 'generated', score: Number(result.draft.personalization_score), needs_review: result.needs_review });
+      // Generate all 4 steps for full autonomy
+      const generated = [];
+      for (let step = 1; step <= 4; step++) {
+        // Skip steps that already have a draft
+        const existing = await DB.prepare("SELECT id,status FROM email_drafts WHERE contact_id=? AND step_number=?").bind(row.contact_id, step).first();
+        if (existing && existing.status !== 'failed') {
+          generated.push({ step, status: 'exists' });
+          continue;
+        }
+        const result = await generateStepOnDemand(env, DB, row.contact_id, step);
+        generated.push({ step, status: 'generated', score: Number(result.draft.personalization_score), needs_review: result.needs_review });
+        await releaseSlot(DB);
+        // Re-reserve for the next step
+        if (!await reserveSlot(DB)) break;
+      }
+      // Check if all 4 drafts exist and are ready for scheduling
+      const allDrafts = (await DB.prepare('SELECT step_number,status,personalization_score,constraints_valid FROM email_drafts WHERE contact_id=? ORDER BY step_number').bind(row.contact_id).all()).results || [];
+      const draftCount = allDrafts.length;
+      const allReady = draftCount >= 4 && allDrafts.every((d) => d.status !== 'failed');
+
+      if (allReady) {
+        // Auto-schedule: all 4 drafts generated, schedule the sequence
+        try {
+          await scheduleCopywriting(DB, row.contact_id, { use_default: true });
+          await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,detail='All 4 emails generated and auto-scheduled',finished_at=?,updated_at=? WHERE contact_id=?").bind(nowIso(), nowIso(), row.contact_id).run();
+          results.push({ contact_id: row.contact_id, status: 'scheduled', generated });
+        } catch (e) {
+          // Scheduling failed (e.g. Gmail not connected, missing timezone) — mark as ready for manual review
+          const smsg = String(e?.message || e).slice(0, 500);
+          await DB.prepare("UPDATE copywriting_jobs SET status='ready',stage='ready',progress=100,detail=?,error=?,updated_at=? WHERE contact_id=?").bind(
+            `All 4 emails generated. Auto-schedule skipped: ${smsg}`, smsg, nowIso(), row.contact_id).run();
+          results.push({ contact_id: row.contact_id, status: 'ready', generated, schedule_error: smsg });
+        }
+      } else {
+        await DB.prepare("UPDATE copywriting_jobs SET status=?,stage=?,progress=?,detail=?,updated_at=? WHERE contact_id=?").bind(
+          'ready', 'generating', Math.round((draftCount / 4) * 100),
+          `${draftCount}/4 emails generated. Waiting for remaining steps.`,
+          nowIso(), row.contact_id).run();
+        results.push({ contact_id: row.contact_id, status: 'generating', generated, drafts_count: draftCount });
+      }
     } catch (e) {
       const message = String(e?.message || e).slice(0, 500);
       const config = e?.code === 'NO_PROVIDER' || /no llm provider is configured|configured quota cap|PUBLIC_APP_URL|quota/i.test(message);
