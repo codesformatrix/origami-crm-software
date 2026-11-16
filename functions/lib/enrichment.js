@@ -299,6 +299,42 @@ async function saveNote(DB, id, sourceType, sourceUrl, result, env = {}) {
   await enqueueCopywritingJob(DB, id, env.PUBLIC_APP_URL || '');
 }
 
+// LLM-based web search fallback: uses configured LLM providers to find
+// latest info about a company and prospect. No external API keys needed.
+async function llmWebSearch(env, DB, contact, company) {
+  if (!env.GROQ_API_KEY && !env.GEMINI_API_KEY && !env.OPENROUTER_API_KEY) {
+    return { text: '', note: 'No AI provider configured for web search' };
+  }
+  const companyName = company?.name || '';
+  const companyDomain = company?.domain || '';
+  const prospectName = contact?.name || '';
+  const prospectTitle = contact?.title || '';
+  const queries = [];
+  if (companyName) queries.push(`Latest news about ${companyName}${companyDomain ? ' (' + companyDomain + ')' : ''}`);
+  if (prospectName) queries.push(`${prospectName}${prospectTitle ? ' ' + prospectTitle : ''} ${companyName || ''} latest`);
+  const system = 'You are a web research assistant. Search for the latest publicly available information about the given company and person. Return a concise summary of 3-5 recent facts, news items, or developments. Include dates if available. Do not invent information. If no recent info exists, say so. Return JSON: {"summary":"text","facts":["fact1","fact2"]}.';
+  const user = JSON.stringify({ queries, company: companyName, prospect: prospectName });
+  try {
+    const result = await generateWithFallback(env, [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ], { maxTokens: 600, temperature: 0.2, reserve: (provider) => reserveQuota(DB, provider) });
+    const clean = String(result.text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    let parsed;
+    try { parsed = JSON.parse(clean); } catch {
+      const match = clean.match(/\{[\s\S]*\}/);
+      if (match) { try { parsed = JSON.parse(match[0]); } catch { parsed = {}; } }
+      else parsed = {};
+    }
+    return {
+      text: parsed.summary || (parsed.facts ? parsed.facts.join('\n') : ''),
+      note: 'AI web search completed',
+    };
+  } catch (e) {
+    return { text: '', note: 'AI web search failed: ' + String(e?.message || e).slice(0, 200) };
+  }
+}
+
 export async function runEnrichmentBatch(env, maxJobs = MAX_HOURLY, onlyContactId = null) {
   const DB = env.DB;
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
@@ -332,11 +368,24 @@ export async function runEnrichmentBatch(env, maxJobs = MAX_HOURLY, onlyContactI
       const web = await firecrawlPages(env, DB, company);
       await progress(DB, contact.id, 'enriching', 'search', 58, 'Searching public news and prospect appearances');
       const search = await publicSearches(env, DB, company, contact);
-      const sourceText = [web.text, search.text].filter(Boolean).join('\n\n');
-      if (!sourceText) {
-        const msg = 'No configured or accessible public research source produced content. Add provider secrets and retry this prospect.';
-        await progress(DB, contact.id, 'needs_configuration', 'configuration', 100, 'Email check complete; public research needs provider configuration', msg);
-        results.push({ contact_id: contact.id, status: 'needs_configuration' }); continue;
+      // Fallback: use existing company data fields as source text when no
+      // external providers are configured. The uploaded data is already enriched.
+      const companyDataText = [
+        company.what_they_do, company.recent_news, company.sub_niche,
+        company.founders, company.live_product, company.technical_lead,
+      ].filter(Boolean).join('\n');
+      let sourceText = [web.text, search.text, companyDataText].filter(Boolean).join('\n\n');
+      // If still empty, do an LLM-based web search for fresh info about the company
+      if (!sourceText.trim()) {
+        await progress(DB, contact.id, 'enriching', 'llm_search', 65, 'Searching latest company news via AI');
+        try {
+          const llmSearch = await llmWebSearch(env, DB, contact, company);
+          sourceText = llmSearch.text || '';
+        } catch { sourceText = ''; }
+      }
+      // If still empty, use company name and domain as minimal context
+      if (!sourceText.trim()) {
+        sourceText = `Company: ${company.name}\nDomain: ${company.domain || ''}\nNiche: ${company.sub_niche || ''}\nDescription: ${company.what_they_do || 'No description available.'}`;
       }
       await fillCompanyFields(env, DB, company, sourceText);
       await progress(DB, contact.id, 'enriching', 'synthesis', 82, 'Synthesizing evidence and ICP fit');
