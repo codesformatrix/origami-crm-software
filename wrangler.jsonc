@@ -13,9 +13,7 @@
       "database_id": "b48ffa68-7161-4458-9ddb-220fdb3bfced"
     }
   ],
-  "triggers": [
-    {
-      "cron": ["*/10 * * * *"]
-    }
-  ]
+  "triggers": {
+    "cron": ["*/10 * * * *"]
+  }
 }
