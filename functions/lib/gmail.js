@@ -556,8 +556,9 @@ async function scheduleNext(DB, contact, currentDraft, now, queueRow = {}) {
   const due = scheduleBusinessDays(now, delay, timezone);
   const dueIso = isoNow(due);
   await DB.prepare("UPDATE email_drafts SET status='scheduled',scheduled_at=? WHERE id=?").bind(dueIso, next.id).run();
-  const queued = await DB.prepare(`INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,created_at,updated_at,sequence_id,enrollment_id)
-    VALUES(?,?,'scheduled',?,?,?,?,?)`).bind(next.id, contact.id, dueIso, isoNow(now), isoNow(now), sequenceId, enrollmentId).run();
+  const idempotencyKey = `contact_${contact.id}_step_${nextStep}`;
+  const queued = await DB.prepare(`INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,idempotency_key,created_at,updated_at,sequence_id,enrollment_id)
+    VALUES(?,?,'scheduled',?,?,?,?,?,?)`).bind(next.id, contact.id, dueIso, idempotencyKey, isoNow(now), isoNow(now), sequenceId, enrollmentId).run();
   const created = Number(queued?.meta?.changes || 0) > 0;
   if (enrollment) await DB.prepare("UPDATE enrollments SET step_index=?,next_step_at=?,stop_reason='' WHERE id=? AND status='active'")
     .bind(nextStep - 1, dueIso, enrollment.id).run();

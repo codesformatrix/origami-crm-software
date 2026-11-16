@@ -182,9 +182,10 @@ function pickRandomSendTime(ws, tz, ctx, now) {
  */
 export async function generateWithRetry(env, DB, contactId, stepNumber, context) {
   let lastError = null;
+  let rejectionReason = null;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await generateSingleStepInternal(env, context, stepNumber, attempt > 1);
+      const result = await generateSingleStepInternal(env, context, stepNumber, attempt > 1, rejectionReason || undefined);
       const scored = await scoreDraftInternal(env, [result], context);
       const draft = scored[0];
 
@@ -193,17 +194,27 @@ export async function generateWithRetry(env, DB, contactId, stepNumber, context)
       }
 
       lastError = new Error(`Score ${draft.scoring.score} below 70 (attempt ${attempt})`);
+      // Combine scoring critique with any rejection reason for the revision
+      const critique = [draft.scoring.critique, rejectionReason].filter(Boolean).join(' ').trim() || draft.scoring.critique;
       if (attempt < MAX_RETRIES) {
-        const revised = await generateSingleStepInternal(env, context, stepNumber, true, draft.scoring.critique);
+        const revised = await generateSingleStepInternal(env, context, stepNumber, true, critique);
         const revisedScored = await scoreDraftInternal(env, [revised], context);
         const revisedDraft = revisedScored[0];
         if (revisedDraft.scoring.score >= 70 && revisedDraft.scoring.constraints_valid) {
           return { draft: revisedDraft, score: revisedDraft.scoring.score, attempts: attempt + 1 };
         }
         lastError = new Error(`Revised score ${revisedDraft.scoring.score} still below 70`);
+        rejectionReason = null;
       }
     } catch (e) {
-      lastError = e;
+      const msg = String(e?.message || e);
+      // If this is an auto-reject, capture the reason and pass it as critique on next attempt
+      if (msg.startsWith('Auto-reject:')) {
+        rejectionReason = msg;
+        lastError = e;
+      } else {
+        lastError = e;
+      }
     }
   }
   throw lastError || new Error('All generation attempts failed');
@@ -387,17 +398,18 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
 
       // Store the draft
       await DB.prepare(`
-        INSERT INTO email_drafts(contact_id,step_number,status,subject,body,unsubscribe_url,personalization_score,score_breakdown,score_critique,word_count,constraints_valid,is_user_edited,generated_at,edited_at,scheduled_at,sent_message_id)
-        VALUES(?,?,'draft',?,?,?,?,?,?,?,?,0,?,NULL,NULL,NULL)
+        INSERT INTO email_drafts(contact_id,step_number,status,subject,body,unsubscribe_url,personalization_score,score_breakdown,score_critique,word_count,constraints_valid,is_user_edited,hook_used,sources,generated_at,edited_at,scheduled_at,sent_message_id)
+        VALUES(?,?,'draft',?,?,?,?,?,?,?,?,0,?,?,?,NULL,NULL,NULL)
         ON CONFLICT(contact_id,step_number) DO UPDATE SET
           status='draft',subject=excluded.subject,body=excluded.body,unsubscribe_url=excluded.unsubscribe_url,
           personalization_score=excluded.personalization_score,score_breakdown=excluded.score_breakdown,
           score_critique=excluded.score_critique,word_count=excluded.word_count,constraints_valid=excluded.constraints_valid,
-          is_user_edited=0,generated_at=excluded.generated_at,edited_at=NULL
+          is_user_edited=0,hook_used=excluded.hook_used,sources=excluded.sources,generated_at=excluded.generated_at,edited_at=NULL
       `).bind(
         contactId, stepNumber, genResult.draft.subject, genResult.draft.body, genResult.draft.unsubscribe_url,
         genResult.score, JSON.stringify(genResult.draft.scoring.breakdown || {}), genResult.draft.scoring.critique || '',
-        genResult.draft.scoring.word_count || 0, genResult.draft.scoring.constraints_valid ? 1 : 0, nowIso()
+        genResult.draft.scoring.word_count || 0, genResult.draft.scoring.constraints_valid ? 1 : 0,
+        genResult.draft.hook_used || '', JSON.stringify(genResult.draft.sources || []), nowIso()
       ).run();
 
       // Step 6: Compute send time — convert window to UTC, pick random minute

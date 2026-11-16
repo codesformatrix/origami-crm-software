@@ -346,13 +346,13 @@ function checkAutoReject(body, subject) {
 async function storeDrafts(DB, contactId, drafts, generatedAt) {
   for (const d of drafts) {
     const score = d.scoring;
-    await DB.prepare(`INSERT INTO email_drafts(contact_id,step_number,status,subject,body,unsubscribe_url,personalization_score,score_breakdown,score_critique,word_count,constraints_valid,is_user_edited,generated_at,edited_at,scheduled_at,sent_message_id)
-      VALUES(?,?,'draft',?,?,?,?,?,?,?,?,0,?,NULL,NULL,NULL)
+    await DB.prepare(`INSERT INTO email_drafts(contact_id,step_number,status,subject,body,unsubscribe_url,personalization_score,score_breakdown,score_critique,word_count,constraints_valid,is_user_edited,hook_used,sources,generated_at,edited_at,scheduled_at,sent_message_id)
+      VALUES(?,?,'draft',?,?,?,?,?,?,?,?,0,?,?,?,NULL,NULL,NULL)
       ON CONFLICT(contact_id,step_number) DO UPDATE SET status=CASE WHEN email_drafts.status IN ('scheduled','sent') THEN email_drafts.status ELSE 'draft' END,
       subject=excluded.subject,body=excluded.body,unsubscribe_url=excluded.unsubscribe_url,personalization_score=excluded.personalization_score,
       score_breakdown=excluded.score_breakdown,score_critique=excluded.score_critique,word_count=excluded.word_count,constraints_valid=excluded.constraints_valid,
-      is_user_edited=0,generated_at=excluded.generated_at,edited_at=NULL`)
-      .bind(contactId, d.step_number, d.subject, d.body, d.unsubscribe_url, score.score, JSON.stringify(score.breakdown), score.critique, score.word_count, score.constraints_valid ? 1 : 0, generatedAt).run();
+      is_user_edited=0,hook_used=excluded.hook_used,sources=excluded.sources,generated_at=excluded.generated_at,edited_at=NULL`)
+      .bind(contactId, d.step_number, d.subject, d.body, d.unsubscribe_url, score.score, JSON.stringify(score.breakdown), score.critique, score.word_count, score.constraints_valid ? 1 : 0, d.hook_used || '', JSON.stringify(d.sources || []), generatedAt).run();
   }
 }
 
@@ -429,14 +429,32 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
   await DB.prepare("UPDATE copywriting_jobs SET status='generating',stage='generating',progress=10,detail=?,error='',started_at=?,updated_at=? WHERE contact_id=?").bind(`Generating email ${stepNumber} with fresh context`, nowIso(), nowIso(), contactId).run();
 
   try {
-    const generated = await generateSingleStep(env, DB, data.context, stepNumber);
-    let draft = (await scoreDrafts(env, DB, [generated], { prospect: data.context.prospect, research: data.context.research }))[0];
+    // Generate with up to 3 retries, switching model on failure and passing
+    // auto-reject reasons as critique to guide the rewrite.
+    const MAX_RETRIES = 3;
+    let rejectionReason = null;
+    let draft = null;
 
-    // Auto-revise if score is low
-    if (draft.scoring.score < 70 || !draft.scoring.constraints_valid) {
-      const revised = await generateSingleStep(env, DB, data.context, stepNumber, draft.scoring.critique);
-      draft = (await scoreDrafts(env, DB, [revised], { prospect: data.context.prospect, research: data.context.research }))[0];
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const generated = await generateSingleStep(env, DB, data.context, stepNumber, attempt > 1 ? ([draft?.scoring?.critique, rejectionReason].filter(Boolean).join(' ').trim() || draft?.scoring?.critique) : undefined);
+        draft = (await scoreDrafts(env, DB, [generated], { prospect: data.context.prospect, research: data.context.research }))[0];
+
+        if (draft.scoring.score >= 70 && draft.scoring.constraints_valid) {
+          break;
+        }
+        rejectionReason = null;
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (msg.startsWith('Auto-reject:')) {
+          rejectionReason = msg;
+        } else {
+          throw e;
+        }
+      }
     }
+
+    if (!draft) throw new Error('All generation attempts failed');
 
     await storeDrafts(DB, contactId, [draft], nowIso());
 
