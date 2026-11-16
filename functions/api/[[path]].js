@@ -5,9 +5,9 @@ import { detectLocation, followUpDate, smartCadence, windowStatus, nowIn, tzLabe
 import { buildInsights, buildPlan, scoreContact } from '../lib/coach.js';
 import { configuredProviders, generateWithFallback } from '../lib/llm.js';
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
-import { enqueueCopywritingJob, generateStepOnDemand, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft } from '../lib/copywriting.js';
+import { enqueueCopywritingJob, generateStepOnDemand, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft, refreshScheduledDrafts } from '../lib/copywriting.js';
 import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
-import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken } from '../lib/gmail.js';
+import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken, runGmailSendBatch } from '../lib/gmail.js';
 import { isEmailSuppressed, rememberSuppression, anonymizeSuppression, normalizedDomain, safeDkimSelector, warmupCap } from '../lib/compliance.js';
 
 const OPEN = ["new", "active", "replied"];
@@ -326,10 +326,11 @@ export async function onRequest(context) {
   const publicTracking = parts[0] === "track" && parts.length === 3 &&
     ((parts[1] === "c" && method === "GET") || (parts[1] === "u" && ["GET", "POST"].includes(method)));
   const isPublic = parts.length === 1 && ["login", "whoami", "logout"].includes(parts[0]);
+  const publicCron = parts[0] === "cron" && parts.length === 1 && method === "GET";
   const host = new URL(request.url).hostname;
   const isDev = !host.endsWith(".pages.dev");
   const authenticated = await sessionValid(request, appKey) || isDev;
-  if (!isPublic && !publicTracking && !publicGmailCallback && !authenticated) {
+  if (!isPublic && !publicTracking && !publicGmailCallback && !publicCron && !authenticated) {
     return json({ error: appKey ? "unauthorized" : "authentication is not configured" }, appKey ? 401 : 503);
   }
 
@@ -340,6 +341,26 @@ export async function onRequest(context) {
   const p3 = parts[3] || "";
 
   try {
+    /* ---------------------------------------------------------- cron handler */
+    if (p0 === "cron" && method === "GET") {
+      const now = new Date();
+      const origin = env.PUBLIC_APP_URL || new URL(request.url).origin;
+      const runEnv = { ...env, PUBLIC_APP_URL: origin };
+      const results = {};
+      // Pre-send refresh: regenerate scheduled emails with fresh AI web search context
+      try { results.refresh = await refreshScheduledDrafts(runEnv, db(), now, 2, 12); }
+      catch (e) { results.refresh_error = String(e?.message || e).slice(0, 200); }
+      // Copywriting batch: process queued copywriting jobs (generates step 1)
+      try { results.copywriting = await runCopywritingBatch(runEnv, 10); }
+      catch (e) { results.copywriting_error = String(e?.message || e).slice(0, 200); }
+      // Timezone batch: detect timezones for contacts that still need them
+      try { results.timezone = await runTimezoneBatch(runEnv, 10); }
+      catch (e) { results.timezone_error = String(e?.message || e).slice(0, 200); }
+      // Gmail send batch: pick up due emails and send via Gmail API
+      try { results.gmail = await runGmailSendBatch(runEnv, now); }
+      catch (e) { results.gmail_error = String(e?.message || e).slice(0, 200); }
+      return json({ ok: true, timestamp: now.toISOString(), ...results });
+    }
     if (p0 === "gmail" && p1 === "oauth" && p2 === "callback" && method === "GET") return await finishGmailOAuth(env, db(), request.url);
     /* --------------------------------- public tracking endpoints (no auth) */
     if (p0 === "track" && p1 === "c" && p2 && method === "GET") {
