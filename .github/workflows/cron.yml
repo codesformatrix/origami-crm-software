@@ -13,4 +13,4 @@ jobs:
       - name: Trigger origami-crm /api/cron
         run: |
           curl -s -o /dev/null -w "HTTP %{http_code}\n" \
-            "https://94cef10e.origami-crm-software.pages.dev/api/cron"
+            "https://origami-crm-software.pages.dev/api/cron"
