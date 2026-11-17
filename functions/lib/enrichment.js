@@ -14,6 +14,10 @@ const defaultCaps = {
   firecrawl_daily: 30, firecrawl_monthly: 500, tavily_daily: 50, tavily_monthly: 500,
   serper_daily: 100, serper_lifetime: 2500, groq_daily: 50, gemini_daily: 10,
   openrouter_daily: 20, enrichment_hourly: MAX_HOURLY,
+  apollo_daily_cap: 2, apollo_monthly_cap: 25, hunter_daily_cap: 1, hunter_monthly_cap: 25,
+  firecrawl_daily_cap: 30, firecrawl_monthly_cap: 500, tavily_daily_cap: 50, tavily_monthly_cap: 500,
+  serper_daily_cap: 100, serper_lifetime_cap: 2500, groq_daily_cap: 50, gemini_daily_cap: 10,
+  openrouter_daily_cap: 20, enrichment_hourly_cap: MAX_HOURLY,
 };
 
 async function setting(DB, key) {
