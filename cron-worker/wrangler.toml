@@ -4,6 +4,4 @@ compatibility_date = "2024-09-23"
 
 # Cron Trigger: fires every 10 minutes (UTC)
 [triggers]
-events = [
-  { type = "schedule", cron = "*/10 * * * *" }
-]
+cron = ["*/10 * * * *"]
