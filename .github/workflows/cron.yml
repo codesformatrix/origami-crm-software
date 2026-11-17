@@ -2,7 +2,7 @@ name: Cron Trigger
 
 on:
   schedule:
-    # Runs every 10 minutes (UTC). Cloudflare cron ticks are every 10 min.
+    # Runs every 10 minutes (UTC)
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
