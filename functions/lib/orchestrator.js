@@ -76,8 +76,8 @@ function parseArray(val) {
  */
 export async function findUpcomingProspects(DB, now = new Date(), lookAheadMin = 60) {
   const candidates = (await DB.prepare(`
-    SELECT c.id, c.name, c.email, c.status, c.city, c.country, c.timezone, c.company_id,
-           co.timezone AS company_timezone, co.name AS company_name
+    SELECT c.id, c.name, c.email, c.status, c.timezone, c.company_id,
+           co.timezone AS company_timezone, co.name AS company_name, co.city, co.country
     FROM contacts c
     JOIN companies co ON co.id = c.company_id
     WHERE c.status NOT IN ('unsubscribed','do_not_contact','bounced','passed','paused','lost','replied','won')
