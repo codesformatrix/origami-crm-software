@@ -398,10 +398,13 @@ export async function runEnrichmentBatch(env, maxJobs = MAX_HOURLY, onlyContactI
     } catch (e) {
       const message = String(e?.message || e).slice(0, 800);
       const config = /NO_PROVIDER|configured quota cap reached/i.test(message);
-      await progress(DB, contact.id, config ? 'needs_configuration' : 'failed', config ? 'configuration' : 'failed', config ? 100 : 0,
-        config ? 'Research requires a configured AI provider or quota availability' : 'Enrichment stopped; use Retry after reviewing provider status', message);
-      await logStep(DB, contact.id, 0, config ? 'needs_configuration' : 'failed', config ? 'Enrichment needs configuration.' : 'Enrichment failed.', message, 'enrichment');
-      results.push({ contact_id: contact.id, status: config ? 'needs_configuration' : 'failed' });
+      const cid = typeof contact !== 'undefined' && contact ? contact.id : (candidate ? candidate.contact_id : 0);
+      if (cid) {
+        await progress(DB, cid, config ? 'needs_configuration' : 'failed', config ? 'configuration' : 'failed', config ? 100 : 0,
+          config ? 'Research requires a configured AI provider or quota availability' : 'Enrichment stopped; use Retry after reviewing provider status', message);
+        await logStep(DB, cid, 0, config ? 'needs_configuration' : 'failed', config ? 'Enrichment needs configuration.' : 'Enrichment failed.', message, 'enrichment');
+      }
+      results.push({ contact_id: cid, status: config ? 'needs_configuration' : 'failed' });
     }
   }
   return { processed: results.length, results };
