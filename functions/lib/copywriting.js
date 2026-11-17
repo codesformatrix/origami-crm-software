@@ -492,9 +492,9 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
   const DB = env.DB;
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',progress=0,detail='Copywriter stopped unexpectedly; manually retry',error='stale in-progress job',updated_at=? WHERE status='generating' AND started_at<?").bind(nowIso(), staleBefore).run();
-  // Auto-requeue stuck jobs: reset needs_configuration (PUBLIC_APP_URL fixed) and failed (LLM retry) back to queued
+  // Auto-requeue ALL stuck jobs: needs_configuration (config/quota fixed) and failed (LLM retry) back to queued
   if (env.PUBLIC_APP_URL) {
-    await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeued after config fix',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='needs_configuration' AND error LIKE '%PUBLIC_APP_URL%'").bind(nowIso()).run();
+    await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeued after config fix',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='needs_configuration'").bind(nowIso()).run();
   }
   // Retry failed jobs on each batch run (LLM providers may have recovered)
   await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-retry after provider recovery',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='failed' AND error NOT LIKE '%stale in-progress%'").bind(nowIso()).run();
