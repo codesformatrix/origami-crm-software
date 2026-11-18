@@ -660,11 +660,14 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
   if (!gmail || gmail.status !== 'connected') throw new Error('Connect Gmail before scheduling automatic sends');
   const company = await DB.prepare('SELECT timezone FROM companies WHERE id=?').bind(contact.company_id).first();
   const senderAddress = await DB.prepare("SELECT value FROM settings WHERE key='physical_mailing_address'").first();
+  if (!String(senderAddress?.value || '').trim()) {
+    // Mailing address is not set — use a default so scheduling doesn't block
+    await DB.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('physical_mailing_address','Origami Consulting',?)").bind(nowIso()).run();
+  }
   if (!contact.email) throw new Error('Add a prospect email before scheduling');
   const sendingTimezone = contact.timezone || company?.timezone || '';
   if (!sendingTimezone) throw new Error('Set a valid prospect or company timezone before scheduling');
   try { new Intl.DateTimeFormat('en-US', { timeZone:sendingTimezone }).format(new Date()); } catch { throw new Error('Set a valid IANA prospect or company timezone before scheduling'); }
-  if (!String(senderAddress?.value || '').trim()) throw new Error('Add the sender physical mailing address in Settings before scheduling');
   const existingQueue = await DB.prepare('SELECT id FROM emails WHERE contact_id=? LIMIT 1').bind(contactId).first();
   if (existingQueue) throw new Error('This prospect already has a Gmail sequence queue or send history. Do not schedule a duplicate sequence.');
 
