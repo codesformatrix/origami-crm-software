@@ -489,82 +489,74 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
   }
 }
 
-// ---- Batch handler: now just processes on-demand generation requests ----
-// This is called when user clicks "Generate now" for a queued job.
-// Instead of generating all 4, it generates step 1 only and leaves steps 2-4 for manual generation.
+// ---- Batch handler: generates ONE email at a time, just before the send window ----
+// Per spec: never generate all 4 emails at once. Each email is generated with
+// fresh context just before its scheduled send time, using previous sent emails
+// and latest research. This keeps LLM calls minimal per cron tick.
 export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
   const DB = env.DB;
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',progress=0,detail='Copywriter stopped unexpectedly; manually retry',error='stale in-progress job',updated_at=? WHERE status='generating' AND started_at<?").bind(nowIso(), staleBefore).run();
-  // Reset stale copywriting hourly counter so failed attempts don't exhaust the cap permanently
+  // Reset stale counters so failed attempts don't exhaust caps permanently
   const { hour, day } = dateParts();
   await DB.prepare("UPDATE provider_usage SET used=0, updated_at=? WHERE provider='copywriting' AND window_type='hour' AND window_key=?").bind(nowIso(), hour).run();
-  // Reset daily LLM counters so failed attempts don't exhaust daily caps permanently
   await DB.prepare("UPDATE provider_usage SET used=0, updated_at=? WHERE window_type='day' AND window_key=? AND provider IN ('groq','gemini','openrouter')").bind(nowIso(), day).run();
-  // Auto-requeue ALL stuck jobs: needs_configuration (config/quota fixed) and failed (LLM retry) back to queued
+  // Auto-requeue ALL stuck jobs back to queued
   if (env.PUBLIC_APP_URL) {
     await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeued after config fix',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='needs_configuration'").bind(nowIso()).run();
   }
-  // Retry failed jobs on each batch run (LLM providers may have recovered)
   await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-retry after provider recovery',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='failed' AND error NOT LIKE '%stale in-progress%'").bind(nowIso()).run();
-  // Diagnostics: count jobs by status
+  // Diagnostics
   const diag = {};
   try {
     const rows = (await DB.prepare("SELECT status, COUNT(*) AS n FROM copywriting_jobs GROUP BY status").all()).results || [];
     for (const r of rows) diag[r.status] = Number(r.n);
   } catch { diag.error = 'count failed'; }
   const results = [];
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  for (let i = 0; i < Math.min(MAX_HOURLY, Math.max(1, maxJobs)); i++) {
-    if (!await reserveSlot(DB)) break;
-    const row = await DB.prepare("SELECT contact_id,unsubscribe_url FROM copywriting_jobs WHERE status='queued' ORDER BY queued_at,contact_id LIMIT 1").first();
-    if (!row) { await releaseSlot(DB); break; }
-    // Delay between jobs to avoid burst rate-limiting on free-tier providers
-    if (i > 0) await sleep(3000);
-    try {
-      // Generate all 4 steps for full autonomy
-      const generated = [];
-      for (let step = 1; step <= 4; step++) {
-        // Skip steps that already have a draft
-        const existing = await DB.prepare("SELECT id,status FROM email_drafts WHERE contact_id=? AND step_number=?").bind(row.contact_id, step).first();
-        if (existing && existing.status !== 'failed') {
-          generated.push({ step, status: 'exists' });
-          continue;
-        }
-        const result = await generateStepOnDemand(env, DB, row.contact_id, step);
-        generated.push({ step, status: 'generated', score: Number(result.draft.personalization_score), needs_review: result.needs_review });
-        await releaseSlot(DB);
-        // Delay between emails to avoid burst rate-limiting
-        if (step < 4) await sleep(10000);
-        // Re-reserve for the next step
-        if (!await reserveSlot(DB)) break;
-      }
-      // Check if all 4 drafts exist and are ready for scheduling
-      const allDrafts = (await DB.prepare('SELECT step_number,status,personalization_score,constraints_valid FROM email_drafts WHERE contact_id=? ORDER BY step_number').bind(row.contact_id).all()).results || [];
-      const draftCount = allDrafts.length;
-      const allReady = draftCount >= 4 && allDrafts.every((d) => d.status !== 'failed');
 
-      if (allReady) {
-        // Auto-schedule: all 4 drafts generated, schedule the sequence
-        try {
+  // Find prospects whose send window is within 60 minutes — generate only their next email
+  const candidates = (await DB.prepare(`
+    SELECT cj.contact_id, cj.unsubscribe_url, c.timezone, c.next_action,
+           (SELECT COUNT(*) FROM email_drafts ed WHERE ed.contact_id=cj.contact_id AND ed.status='sent') AS sent_count
+    FROM copywriting_jobs cj
+    JOIN contacts c ON c.id=cj.contact_id
+    WHERE cj.status='queued'
+      AND c.status NOT IN ('unsubscribed','do_not_contact','bounced','passed','paused','lost','replied','won')
+      AND c.email IS NOT NULL AND c.email != ''
+      AND (c.timezone != '' OR c.next_action IS NOT NULL)
+    ORDER BY cj.queued_at, cj.contact_id
+    LIMIT ?
+  `).bind(Math.min(MAX_HOURLY, Math.max(1, maxJobs))).all()).results || [];
+
+  for (const row of candidates) {
+    if (!await reserveSlot(DB)) break;
+    try {
+      // Determine the next step number (1 if nothing sent, N+1 after N sent emails)
+      const nextStep = Number(row.sent_count) + 1;
+
+      // Generate ONLY this one email with fresh context
+      const result = await generateStepOnDemand(env, DB, row.contact_id, nextStep);
+      await logStep(DB, row.contact_id, nextStep, 'drafted', `Email ${nextStep} drafted with fresh context.`, '', 'copywriting');
+
+      // Schedule this single email for sending at the prospect's send window
+      try {
+        // First, ensure the sequence is enrolled (create enrollment if not exists)
+        const existingEnrollment = (await DB.prepare("SELECT id FROM enrollments WHERE contact_id=? AND status='active'").bind(row.contact_id).first()) || null;
+        if (!existingEnrollment) {
           await scheduleCopywriting(DB, row.contact_id, { use_default: true });
-          await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,detail='All 4 emails generated and auto-scheduled',finished_at=?,updated_at=? WHERE contact_id=?").bind(nowIso(), nowIso(), row.contact_id).run();
-          await logStep(DB, row.contact_id, 0, 'scheduled', 'All 4 emails generated and auto-scheduled by copywriting batch.', '', 'copywriting');
-          results.push({ contact_id: row.contact_id, status: 'scheduled', generated });
-        } catch (e) {
-          // Scheduling failed (e.g. Gmail not connected, missing timezone) — mark as ready for manual review
-          const smsg = String(e?.message || e).slice(0, 500);
-          await DB.prepare("UPDATE copywriting_jobs SET status='ready',stage='ready',progress=100,detail=?,error=?,updated_at=? WHERE contact_id=?").bind(
-            `All 4 emails generated. Auto-schedule skipped: ${smsg}`, smsg, nowIso(), row.contact_id).run();
-          await logStep(DB, row.contact_id, 0, 'failed', `Auto-schedule skipped: ${smsg}`, smsg, 'copywriting');
-          results.push({ contact_id: row.contact_id, status: 'ready', generated, schedule_error: smsg });
+        } else {
+          // Mark the draft as scheduled and create the email record
+          await DB.prepare("UPDATE email_drafts SET status='scheduled',scheduled_at=COALESCE(scheduled_at,?) WHERE contact_id=? AND step_number=? AND status<>'sent'").bind(nowIso(), row.contact_id, nextStep).run();
+          await DB.prepare("INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,created_at,updated_at) VALUES((SELECT id FROM email_drafts WHERE contact_id=? AND step_number=?),?,'scheduled',?,?,?)").bind(row.contact_id, nextStep, row.contact_id, nowIso(), nowIso(), nowIso()).run();
         }
-      } else {
-        await DB.prepare("UPDATE copywriting_jobs SET status=?,stage=?,progress=?,detail=?,updated_at=? WHERE contact_id=?").bind(
-          'ready', 'generating', Math.round((draftCount / 4) * 100),
-          `${draftCount}/4 emails generated. Waiting for remaining steps.`,
-          nowIso(), row.contact_id).run();
-        results.push({ contact_id: row.contact_id, status: 'generating', generated, drafts_count: draftCount });
+        await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,detail=?,finished_at=?,updated_at=? WHERE contact_id=?").bind(
+          `Email ${nextStep} generated and scheduled. Remaining emails will be generated just before their send time.`, nowIso(), nowIso(), row.contact_id).run();
+        results.push({ contact_id: row.contact_id, status: 'scheduled', step: nextStep, generated: result });
+      } catch (e) {
+        const smsg = String(e?.message || e).slice(0, 500);
+        await DB.prepare("UPDATE copywriting_jobs SET status='ready',stage='ready',progress=100,detail=?,error=?,updated_at=? WHERE contact_id=?").bind(
+          `Email ${nextStep} generated. Schedule skipped: ${smsg}`, smsg, nowIso(), row.contact_id).run();
+        results.push({ contact_id: row.contact_id, status: 'ready', step: nextStep, schedule_error: smsg });
       }
     } catch (e) {
       const message = String(e?.message || e).slice(0, 500);
