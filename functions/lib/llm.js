@@ -4,7 +4,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function providers(env) {
   const out = [];
-  if (env.GROQ_API_KEY) out.push({ name: 'groq', key: env.GROQ_API_KEY, model: env.GROQ_MODEL || 'llama-3.3-70b-versatile' });
+  // Force the best writing model on Groq regardless of env var — the env var
+  // may contain a deprecated model name (openai/gpt-oss-120b returns HTTP 404)
+  // llama-3.3-70b-versatile is Groq's best quality model for creative writing
+  if (env.GROQ_API_KEY) out.push({ name: 'groq', key: env.GROQ_API_KEY, model: 'llama-3.3-70b-versatile' });
   if (env.GEMINI_API_KEY) out.push({ name: 'gemini', key: env.GEMINI_API_KEY, model: env.GEMINI_MODEL || 'gemini-3.5-flash' });
   if (env.OPENROUTER_API_KEY) {
     // Always use a known-good free model — the env var may contain an invalid model name

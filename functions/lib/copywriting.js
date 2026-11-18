@@ -2,6 +2,7 @@ import { generateWithFallback } from './llm.js';
 import { isEmailSuppressed } from './compliance.js';
 import { logStep } from './steplog.js';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_HOURLY = 1; // 1 job per cron run — free-tier rate limits are very tight
 const nowIso = () => new Date().toISOString();
 const dateParts = () => {
@@ -609,6 +610,8 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
       await releaseSlot(DB);
       results.push({ contact_id: row.contact_id, status: config ? 'needs_configuration' : 'failed', error: message });
     }
+    // Delay between jobs to prevent network errors from parallel LLM calls
+    if (candidates.indexOf(row) < candidates.length - 1) await sleep(5000);
   }
   return { processed: results.length, results, diagnostics: diag };
 }

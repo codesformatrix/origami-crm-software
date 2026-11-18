@@ -15,6 +15,8 @@ import { deepResearch } from './search.js';
 import { generateWithFallback } from './llm.js';
 import { windowStatus, zonedToUtc, nextWorkingDay, addDays } from './engine.js';
 import { isEmailSuppressed } from './compliance.js';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 import { logStep, isGlobalPaused, isReviewMode } from './steplog.js';
 
 const MAX_RETRIES = 3;
@@ -522,6 +524,8 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
         .bind(msg, nowIso(), contactId).run();
       results.push({ contact_id: contactId, step: stepNumber, status: 'failed', error: msg });
     }
+    // Delay between prospects to prevent network errors from too many parallel LLM calls
+    if (upcoming.indexOf(prospect) < upcoming.length - 1) await sleep(5000);
   }
 
   return { processed: results.length, results };
