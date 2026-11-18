@@ -39,7 +39,12 @@ function requestFor(provider, messages, maxTokens, temperature) {
   return {
     url, headers,
     body: { model: provider.model, messages, max_tokens: maxTokens, temperature },
-    parse: (data) => String(data.choices?.[0]?.message?.content || '').trim(),
+    parse: (data) => {
+      const msg = data.choices?.[0]?.message || {};
+      // Reasoning models (gpt-oss) may put content in reasoning_content or reasoning
+      const content = msg.content || msg.reasoning_content || msg.reasoning || '';
+      return String(content || '').trim();
+    },
   };
 }
 

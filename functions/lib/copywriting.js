@@ -530,6 +530,8 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
         const result = await generateStepOnDemand(env, DB, row.contact_id, step);
         generated.push({ step, status: 'generated', score: Number(result.draft.personalization_score), needs_review: result.needs_review });
         await releaseSlot(DB);
+        // Delay between emails to avoid burst rate-limiting
+        if (step < 4) await sleep(5000);
         // Re-reserve for the next step
         if (!await reserveSlot(DB)) break;
       }
