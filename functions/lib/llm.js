@@ -8,7 +8,8 @@ function providers(env) {
   if (env.GEMINI_API_KEY) out.push({ name: 'gemini', key: env.GEMINI_API_KEY, model: env.GEMINI_MODEL || 'gemini-3.5-flash' });
   if (env.OPENROUTER_API_KEY) {
     // Always use a known-good free model — the env var may contain an invalid model name
-    out.push({ name: 'openrouter', key: env.OPENROUTER_API_KEY, model: 'google/gemini-2.0-flash-exp:free' });
+    // google/gemma-4-31b-it:free is confirmed available on OpenRouter (gemma, not gemini)
+    out.push({ name: 'openrouter', key: env.OPENROUTER_API_KEY, model: 'google/gemma-4-31b-it:free' });
   }
   return out;
 }
