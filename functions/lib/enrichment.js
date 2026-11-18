@@ -40,7 +40,9 @@ export async function reserveQuota(DB, provider, units = 1) {
   else if (['apollo', 'hunter', 'firecrawl', 'tavily'].includes(provider)) {
     windows = [['day', periods.day, await cap(DB, provider + '_daily_cap')], ['month', periods.month, await cap(DB, provider + '_monthly_cap')]];
   } else if (['groq', 'gemini', 'openrouter'].includes(provider)) {
-    windows = [['day', periods.day, await cap(DB, provider + '_daily_cap')]];
+    // LLM providers use soft caps — always allow, just track usage.
+    // Hard-blocking on quota causes permanent failures when counters are stale.
+    windows = [['day', periods.day, 999999]];
   } else return false;
   const reserved = [];
   for (const [type, key, limit] of windows) {

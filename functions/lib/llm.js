@@ -6,7 +6,12 @@ function providers(env) {
   const out = [];
   if (env.GROQ_API_KEY) out.push({ name: 'groq', key: env.GROQ_API_KEY, model: env.GROQ_MODEL || 'openai/gpt-oss-120b' });
   if (env.GEMINI_API_KEY) out.push({ name: 'gemini', key: env.GEMINI_API_KEY, model: env.GEMINI_MODEL || 'gemini-3.5-flash' });
-  if (env.OPENROUTER_API_KEY && String(env.OPENROUTER_MODEL || '').endsWith(':free')) out.push({ name: 'openrouter', key: env.OPENROUTER_API_KEY, model: env.OPENROUTER_MODEL });
+  if (env.OPENROUTER_API_KEY) {
+    const orModel = String(env.OPENROUTER_MODEL || '').trim();
+    // Validate model ends with :free; fall back to a known-good free model if not
+    if (orModel.endsWith(':free')) out.push({ name: 'openrouter', key: env.OPENROUTER_API_KEY, model: orModel });
+    else out.push({ name: 'openrouter', key: env.OPENROUTER_API_KEY, model: 'google/gemini-2.0-flash-exp:free' });
+  }
   return out;
 }
 

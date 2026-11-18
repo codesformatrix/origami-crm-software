@@ -12,14 +12,12 @@ const DEFAULT_LLM_CAPS = { groq: 50, gemini: 10, openrouter: 20 };
 
 async function providerReserve(DB, provider) {
   const { day } = dateParts();
-  const capRow = await DB.prepare('SELECT value FROM settings WHERE key=?').bind(provider + '_daily_cap').first();
-  const cap = Number(capRow?.value ?? DEFAULT_LLM_CAPS[provider] ?? 0);
-  const effectiveCap = cap < 1 ? (DEFAULT_LLM_CAPS[provider] ?? 0) : cap;
-  if (!Number.isFinite(effectiveCap) || effectiveCap < 1) return false;
-  const result = await DB.prepare(`INSERT INTO provider_usage(provider,window_type,window_key,used,updated_at) VALUES(?,'day',?,1,?)
-    ON CONFLICT(provider,window_type,window_key) DO UPDATE SET used=provider_usage.used+1,updated_at=excluded.updated_at
-    WHERE provider_usage.used+1<=?`).bind(provider, day, nowIso(), effectiveCap).run();
-  return Number(result?.meta?.changes || 0) > 0;
+  // Always allow the request — quota is a soft cap, not a hard block.
+  // If the provider is rate-limited, the API returns 429 and the fallback chain moves to the next provider.
+  // This prevents stale counters from permanently blocking all generation.
+  await DB.prepare(`INSERT INTO provider_usage(provider,window_type,window_key,used,updated_at) VALUES(?,'day',?,1,?)
+    ON CONFLICT(provider,window_type,window_key) DO UPDATE SET used=provider_usage.used+1,updated_at=excluded.updated_at`).bind(provider, day, nowIso()).run();
+  return true;
 }
 async function reserveSlot(DB) {
   const { hour } = dateParts();
