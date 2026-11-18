@@ -30,6 +30,9 @@ function jsonObject(raw) {
     // Try to extract JSON from markdown fences
     const m = String(raw || '').match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (m) return JSON.parse(m[1]);
+    // Fallback: wrap plain-text response as body string
+    const text = String(raw || '').trim();
+    if (text) return { body: text };
     return {};
   }
 }
@@ -245,7 +248,11 @@ async function generateSingleStepInternal(env, context, stepNumber, isRevision, 
   ], { maxTokens: 800, temperature: 0.35 });
 
   const parsed = jsonObject(result.text);
-  const emails = Array.isArray(parsed.emails) ? parsed.emails : [];
+  let emails = Array.isArray(parsed.emails) ? parsed.emails : [];
+  // If the model returned plain text (no emails array), wrap it as a single email for this step
+  if (!emails.length && parsed.body) {
+    emails = [{ step_number: stepNumber, subject: parsed.subject || '', body: parsed.body, hook_used: parsed.hook_used || '', sources: parsed.sources || [] }];
+  }
   const row = emails.find((x) => Number(x.step_number) === stepNumber);
   if (!row) throw new Error(`AI did not return email step ${stepNumber}`);
 
@@ -270,13 +277,17 @@ async function generateSingleStepInternal(env, context, stepNumber, isRevision, 
  * violates hard rules, or null if it passes.
  */
 function checkAutoReject(body, subject) {
-  const text = `${subject}\n${body}`;
-  // Dash marks (em dash, en dash, hyphen used as punctuation)
-  if (/[—–-]/.test(text)) return 'dash mark found';
+  // Strip URLs (they contain hyphens that would trigger false rejections)
+  const cleanBody = String(body || '').replace(/https?:\/\/[^\s]+/g, 'URL');
+  const cleanSubject = String(subject || '').replace(/https?:\/\/[^\s]+/g, 'URL');
+  const text = `${cleanSubject}\n${cleanBody}`;
+  // Dash marks (em dash, en dash) — not hyphens inside URLs or words
+  if (/[—–]/.test(text)) return 'em/en dash found';
+  if (/(?:^|\s)[-](?:\s|$)/.test(text)) return 'dash mark found';
   // Bullet points
-  if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(body)) return 'bullet point found';
+  if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(cleanBody)) return 'bullet point found';
   // Banned buzzwords
-  const banned = ['leverage', 'streamline', 'solutions', 'synergy'];
+  const banned = ['leverage', 'streamline', 'synergy'];
   const lower = text.toLowerCase();
   for (const w of banned) {
     if (lower.includes(w)) return `banned word found: ${w}`;

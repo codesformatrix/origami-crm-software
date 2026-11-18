@@ -336,10 +336,15 @@ async function generateSingleStep(env, DB, context, stepNumber, critique = null)
 // Auto-reject validation: returns a rejection reason string if the draft
 // violates hard rules, or null if it passes.
 function checkAutoReject(body, subject) {
-  const text = `${subject}\n${body}`;
-  if (/[—–-]/.test(text)) return 'dash mark found';
-  if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(body)) return 'bullet point found';
-  const banned = ['leverage', 'streamline', 'solutions', 'synergy'];
+  // Strip URLs (they contain hyphens that would trigger false rejections)
+  const cleanBody = String(body || '').replace(/https?:\/\/[^\s]+/g, 'URL');
+  const cleanSubject = String(subject || '').replace(/https?:\/\/[^\s]+/g, 'URL');
+  const text = `${cleanSubject}\n${cleanBody}`;
+  // Dash marks (em dash, en dash) — not hyphens inside URLs or words
+  if (/[—–]/.test(text)) return 'em/en dash found';
+  if (/(?:^|\s)[-](?:\s|$)/.test(text)) return 'dash mark found';
+  if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(cleanBody)) return 'bullet point found';
+  const banned = ['leverage', 'streamline', 'synergy'];
   const lower = text.toLowerCase();
   for (const w of banned) {
     if (lower.includes(w)) return `banned word found: ${w}`;
