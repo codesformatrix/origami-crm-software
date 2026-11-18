@@ -39,7 +39,8 @@ function jsonObject(raw) {
   try { return JSON.parse(clean); } catch {}
   const match = clean.match(/\{[\s\S]*\}/);
   if (match) { try { return JSON.parse(match[0]); } catch {} }
-  throw new Error('AI returned invalid copywriting JSON');
+  // Last resort: if the model returned plain text, wrap it as a body string
+  return { subject: '', body: clean.slice(0, 1000), hook_used: '', sources: [] };
 }
 function parseList(raw) { try { const a = JSON.parse(raw || '[]'); return Array.isArray(a) ? a.map((x) => String(x).trim()).filter(Boolean) : []; } catch { return []; } }
 function actualWordCount(body, unsubscribeUrl) {
