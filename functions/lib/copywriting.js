@@ -492,6 +492,9 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
   const DB = env.DB;
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',progress=0,detail='Copywriter stopped unexpectedly; manually retry',error='stale in-progress job',updated_at=? WHERE status='generating' AND started_at<?").bind(nowIso(), staleBefore).run();
+  // Reset stale copywriting hourly counter so failed attempts don't exhaust the cap permanently
+  const { hour } = dateParts();
+  await DB.prepare("UPDATE provider_usage SET used=0, updated_at=? WHERE provider='copywriting' AND window_type='hour' AND window_key=?").bind(nowIso(), hour).run();
   // Auto-requeue ALL stuck jobs: needs_configuration (config/quota fixed) and failed (LLM retry) back to queued
   if (env.PUBLIC_APP_URL) {
     await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeued after config fix',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='needs_configuration'").bind(nowIso()).run();
@@ -559,6 +562,7 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
         config ? 'needs_configuration' : 'failed', config ? 'configuration' : 'failed',
         config ? 'Copywriting needs an AI provider, quota capacity, and public URL' : 'Generation failed; review the error before manually retrying',
         message, nowIso(), row.contact_id).run();
+      await releaseSlot(DB);
       results.push({ contact_id: row.contact_id, status: config ? 'needs_configuration' : 'failed' });
     }
   }
