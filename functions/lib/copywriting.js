@@ -2,7 +2,7 @@ import { generateWithFallback } from './llm.js';
 import { isEmailSuppressed } from './compliance.js';
 import { logStep } from './steplog.js';
 
-const MAX_HOURLY = 10;
+const MAX_HOURLY = 3; // Reduced from 10 to avoid overwhelming free-tier rate limits
 const nowIso = () => new Date().toISOString();
 const dateParts = () => {
   const d = new Date();
@@ -510,10 +510,13 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
     for (const r of rows) diag[r.status] = Number(r.n);
   } catch { diag.error = 'count failed'; }
   const results = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (let i = 0; i < Math.min(MAX_HOURLY, Math.max(1, maxJobs)); i++) {
     if (!await reserveSlot(DB)) break;
     const row = await DB.prepare("SELECT contact_id,unsubscribe_url FROM copywriting_jobs WHERE status='queued' ORDER BY queued_at,contact_id LIMIT 1").first();
     if (!row) { await releaseSlot(DB); break; }
+    // Delay between jobs to avoid burst rate-limiting on free-tier providers
+    if (i > 0) await sleep(3000);
     try {
       // Generate all 4 steps for full autonomy
       const generated = [];
