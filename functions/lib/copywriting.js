@@ -14,10 +14,11 @@ async function providerReserve(DB, provider) {
   const { day } = dateParts();
   const capRow = await DB.prepare('SELECT value FROM settings WHERE key=?').bind(provider + '_daily_cap').first();
   const cap = Number(capRow?.value ?? DEFAULT_LLM_CAPS[provider] ?? 0);
-  if (!Number.isFinite(cap) || cap < 1) return false;
+  const effectiveCap = cap < 1 ? (DEFAULT_LLM_CAPS[provider] ?? 0) : cap;
+  if (!Number.isFinite(effectiveCap) || effectiveCap < 1) return false;
   const result = await DB.prepare(`INSERT INTO provider_usage(provider,window_type,window_key,used,updated_at) VALUES(?,'day',?,1,?)
     ON CONFLICT(provider,window_type,window_key) DO UPDATE SET used=provider_usage.used+1,updated_at=excluded.updated_at
-    WHERE provider_usage.used+1<=?`).bind(provider, day, nowIso(), cap).run();
+    WHERE provider_usage.used+1<=?`).bind(provider, day, nowIso(), effectiveCap).run();
   return Number(result?.meta?.changes || 0) > 0;
 }
 async function reserveSlot(DB) {
@@ -493,8 +494,10 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
   await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',progress=0,detail='Copywriter stopped unexpectedly; manually retry',error='stale in-progress job',updated_at=? WHERE status='generating' AND started_at<?").bind(nowIso(), staleBefore).run();
   // Reset stale copywriting hourly counter so failed attempts don't exhaust the cap permanently
-  const { hour } = dateParts();
+  const { hour, day } = dateParts();
   await DB.prepare("UPDATE provider_usage SET used=0, updated_at=? WHERE provider='copywriting' AND window_type='hour' AND window_key=?").bind(nowIso(), hour).run();
+  // Reset daily LLM counters so failed attempts don't exhaust daily caps permanently
+  await DB.prepare("UPDATE provider_usage SET used=0, updated_at=? WHERE window_type='day' AND window_key=? AND provider IN ('groq','gemini','openrouter')").bind(nowIso(), day).run();
   // Auto-requeue ALL stuck jobs: needs_configuration (config/quota fixed) and failed (LLM retry) back to queued
   if (env.PUBLIC_APP_URL) {
     await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeued after config fix',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='needs_configuration'").bind(nowIso()).run();
@@ -563,7 +566,7 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
         config ? 'Copywriting needs an AI provider, quota capacity, and public URL' : 'Generation failed; review the error before manually retrying',
         message, nowIso(), row.contact_id).run();
       await releaseSlot(DB);
-      results.push({ contact_id: row.contact_id, status: config ? 'needs_configuration' : 'failed' });
+      results.push({ contact_id: row.contact_id, status: config ? 'needs_configuration' : 'failed', error: message });
     }
   }
   return { processed: results.length, results, diagnostics: diag };
