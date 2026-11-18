@@ -498,6 +498,12 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
   }
   // Retry failed jobs on each batch run (LLM providers may have recovered)
   await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-retry after provider recovery',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='failed' AND error NOT LIKE '%stale in-progress%'").bind(nowIso()).run();
+  // Diagnostics: count jobs by status
+  const diag = {};
+  try {
+    const rows = (await DB.prepare("SELECT status, COUNT(*) AS n FROM copywriting_jobs GROUP BY status").all()).results || [];
+    for (const r of rows) diag[r.status] = Number(r.n);
+  } catch { diag.error = 'count failed'; }
   const results = [];
   for (let i = 0; i < Math.min(MAX_HOURLY, Math.max(1, maxJobs)); i++) {
     if (!await reserveSlot(DB)) break;
@@ -556,7 +562,7 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
       results.push({ contact_id: row.contact_id, status: config ? 'needs_configuration' : 'failed' });
     }
   }
-  return { processed: results.length, results };
+  return { processed: results.length, results, diagnostics: diag };
 }
 
 // ---- Regenerate a single step with fresh context ----
