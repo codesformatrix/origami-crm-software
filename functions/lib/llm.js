@@ -80,7 +80,7 @@ export async function generateWithFallback(env, messages, options = {}) {
         break;
       }
       if (response.status === 429 && attempt < 2) {
-        await sleep(3000 * (2 ** attempt));
+        await sleep(10000 * (2 ** attempt));
         continue;
       }
       if (!response.ok) {

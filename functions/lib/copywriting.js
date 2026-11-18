@@ -2,7 +2,7 @@ import { generateWithFallback } from './llm.js';
 import { isEmailSuppressed } from './compliance.js';
 import { logStep } from './steplog.js';
 
-const MAX_HOURLY = 3; // Reduced from 10 to avoid overwhelming free-tier rate limits
+const MAX_HOURLY = 1; // 1 job per cron run — free-tier rate limits are very tight
 const nowIso = () => new Date().toISOString();
 const dateParts = () => {
   const d = new Date();
@@ -535,7 +535,7 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
         generated.push({ step, status: 'generated', score: Number(result.draft.personalization_score), needs_review: result.needs_review });
         await releaseSlot(DB);
         // Delay between emails to avoid burst rate-limiting
-        if (step < 4) await sleep(5000);
+        if (step < 4) await sleep(10000);
         // Re-reserve for the next step
         if (!await reserveSlot(DB)) break;
       }
