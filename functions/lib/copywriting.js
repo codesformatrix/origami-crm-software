@@ -318,7 +318,11 @@ async function generateSingleStep(env, DB, context, stepNumber, critique = null)
     maxTokens: 800, temperature: 0.35, reserve: (provider) => providerReserve(DB, provider),
   });
   const parsed = jsonObject(result.text);
-  const emails = Array.isArray(parsed.emails) ? parsed.emails : [];
+  let emails = Array.isArray(parsed.emails) ? parsed.emails : [];
+  // If the model returned plain text (no emails array), wrap it as a single email
+  if (!emails.length && parsed.body) {
+    emails = [{ step_number: stepNumber, subject: parsed.subject || '', body: parsed.body, hook_used: parsed.hook_used || '', sources: parsed.sources || [] }];
+  }
   const row = emails.find((x) => Number(x.step_number) === stepNumber);
   if (!row) throw new Error(`AI did not return email step ${stepNumber}`);
 
