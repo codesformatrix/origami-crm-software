@@ -302,7 +302,7 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
 async function generateSingleStep(env, DB, context, stepNumber, critique = null) {
   const isRevision = Boolean(critique);
   const stepRules = stepNumber === 1
-    ? 'Touch 1: 60 to 110 words. Open with one specific detail from the research. Tie it to a real problem they likely have. Ask one low-pressure question.'
+    ? 'Touch 1: 60 to 110 words. Open with the prospect\'s first name, then one specific detail from the research. Tie it to a real problem they likely have. Ask one low-pressure question.'
     : stepNumber === 4
     ? 'Breakup email: shorter, two sentences before the unsubscribe footer. Refer naturally to the previous email and add one new distinct insight.'
     : 'Follow up: shorter than touch 1. Refer naturally to the previous email and add one new distinct angle nothing earlier touched.';
@@ -315,7 +315,7 @@ Hard rules:
 - No buzzwords: leverage, streamline, synergy, solutions, optimize, utilize, empower, seamless, etc.
 - No pitch dump. One idea per email.
 - No fake flattery or generic praise. If you mention something positive, make it specific and grounded.
-- Open with one concrete detail from the research that shows you actually looked into them.
+- Open by using the prospect's first name, then one concrete detail from the research that shows you actually looked into them.
 - Tie it to a problem they likely face. Ask one low-pressure question.
 - Never repeat an angle or phrase from earlier emails in the thread.
 - Subject line: lowercase, 2-5 words, curious but not clickbait.
