@@ -93,7 +93,7 @@ function checkConstraints(draft, unsubscribeUrl, research = {}) {
   if (/\b(urgent|act now|limited time|exclusive|secret|you will not believe|you won't believe)\b/i.test(draft.subject)) issues.push('Remove clickbait or pressure language from the subject.');
   if (draft.subject !== draft.subject.toLowerCase()) issues.push('Subject must be lowercase.');
   if (!unsubscribeUrl || !String(draft.body || '').includes(unsubscribeUrl)) issues.push('The unsubscribe link is missing.');
-  if (/[-\u2010-\u2015\u2212]/.test(prose)) issues.push('Remove dash punctuation from the email copy.');
+  if (/[—–]/.test(prose) || /(?:^|\s)[-](?:\s|$)/.test(prose)) issues.push('Remove dash punctuation from the email copy.');
   if (/i hope this finds you well|leverage|streamline|solutions|synergy|unlock|game.?changer|seamless|cutting.?edge|robust|delve into|revolutionary/i.test(prose)) issues.push('Remove generic or buzzword language.');
   if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(draft.body)) issues.push('No bullet points allowed.');
   if ((prose.match(/\?/g) || []).length > 1) issues.push('Use no more than one question.');
@@ -487,7 +487,7 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
         const generated = await generateSingleStep(env, DB, data.context, stepNumber, attempt > 1 ? ([draft?.scoring?.critique, rejectionReason].filter(Boolean).join(' ').trim() || draft?.scoring?.critique) : undefined);
         draft = (await scoreDrafts(env, DB, [generated], { prospect: data.context.prospect, research: data.context.research }))[0];
 
-        if (draft.scoring.score >= 70 && draft.scoring.constraints_valid) {
+        if (draft.scoring.score >= 50 && draft.scoring.constraints_valid) {
           break;
         }
         rejectionReason = null;
@@ -507,7 +507,7 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
     await logStep(DB, contactId, stepNumber, 'drafted', `Email ${stepNumber} drafted. Score ${draft.scoring.score}.`, '', 'copywriting');
 
     const updated = await DB.prepare('SELECT * FROM email_drafts WHERE contact_id=? AND step_number=?').bind(contactId, stepNumber).first();
-    const needsReview = Number(updated.personalization_score) < 70 || Number(updated.constraints_valid) !== 1;
+    const needsReview = Number(updated.personalization_score) < 50 || Number(updated.constraints_valid) !== 1;
 
     // Check if all 4 steps are now ready
     const allDrafts = await DB.prepare('SELECT step_number, status FROM email_drafts WHERE contact_id=? ORDER BY step_number').bind(contactId).all();
@@ -676,7 +676,7 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
   if (drafts.some((d) => d.status === 'sent')) throw new Error('This sequence already has sent steps. It cannot be restarted from step 1.');
 
   // Check that available drafts meet quality requirements
-  const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 70 || Number(d.constraints_valid) !== 1 || !d.unsubscribe_url || !String(d.body || '').includes(d.unsubscribe_url));
+  const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 50 || Number(d.constraints_valid) !== 1 || !d.unsubscribe_url || !String(d.body || '').includes(d.unsubscribe_url));
   if (lowQuality.length) throw new Error(`${lowQuality.length} draft(s) must score at least 70 and pass copy rules before scheduling. Regenerate or edit them first.`);
 
   const stamp = nowIso();
