@@ -546,6 +546,9 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
     await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeued after config fix',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='needs_configuration'").bind(nowIso()).run();
   }
   await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-retry after provider recovery',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='failed' AND error NOT LIKE '%stale in-progress%'").bind(nowIso()).run();
+  // Auto-requeue jobs stuck in 'ready' — the draft was generated but scheduling
+  // failed (e.g. duplicate-check, missing enrollment). Retry scheduling.
+  await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Auto-requeue ready job for scheduling retry',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE status='ready'").bind(nowIso()).run();
   // Diagnostics
   const diag = {};
   try {
@@ -580,15 +583,12 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
 
       // Schedule this single email for sending at the prospect's send window
       try {
-        // First, ensure the sequence is enrolled (create enrollment if not exists)
-        const existingEnrollment = (await DB.prepare("SELECT id FROM enrollments WHERE contact_id=? AND status='active'").bind(row.contact_id).first()) || null;
-        if (!existingEnrollment) {
-          await scheduleCopywriting(DB, row.contact_id, { use_default: true });
-        } else {
-          // Mark the draft as scheduled and create the email record
-          await DB.prepare("UPDATE email_drafts SET status='scheduled',scheduled_at=COALESCE(scheduled_at,?) WHERE contact_id=? AND step_number=? AND status<>'sent'").bind(nowIso(), row.contact_id, nextStep).run();
-          await DB.prepare("INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,created_at,updated_at) VALUES((SELECT id FROM email_drafts WHERE contact_id=? AND step_number=?),?,'scheduled',?,?,?)").bind(row.contact_id, nextStep, row.contact_id, nowIso(), nowIso(), nowIso()).run();
-        }
+        // Mark the draft as scheduled and create the email record
+        // (bypass scheduleCopywriting's duplicate-check — this handler generates
+        // one email at a time and must work even if an email record already exists
+        // from a previous attempt that was auto-requeued)
+        await DB.prepare("UPDATE email_drafts SET status='scheduled',scheduled_at=COALESCE(scheduled_at,?) WHERE contact_id=? AND step_number=? AND status<>'sent'").bind(nowIso(), row.contact_id, nextStep).run();
+        await DB.prepare("INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,created_at,updated_at) VALUES((SELECT id FROM email_drafts WHERE contact_id=? AND step_number=?),?,'scheduled',?,?,?)").bind(row.contact_id, nextStep, row.contact_id, nowIso(), nowIso(), nowIso()).run();
         await DB.prepare("UPDATE copywriting_jobs SET status='scheduled',stage='scheduled',progress=100,detail=?,finished_at=?,updated_at=? WHERE contact_id=?").bind(
           `Email ${nextStep} generated and scheduled. Remaining emails will be generated just before their send time.`, nowIso(), nowIso(), row.contact_id).run();
         results.push({ contact_id: row.contact_id, status: 'scheduled', step: nextStep, generated: result });
