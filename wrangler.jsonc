@@ -12,5 +12,10 @@
       "database_name": "origami-crm-software",
       "database_id": "e8a74eff-2d07-44b4-987f-fbd8572770d6"
     }
-  ]
+  ],
+  "limits": {
+    "subrequests": 100,
+    "outboundRequests": 1000,
+    "outboundServiceFetches": 100
+  }
 }

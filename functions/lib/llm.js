@@ -109,21 +109,33 @@ export async function generateWithFallback(env, messages, options = {}) {
   const maxTokens = Math.max(1, Math.min(Number(options.maxTokens) || 500, 2000));
   const temperature = Math.max(0, Math.min(Number(options.temperature ?? 0.2), 1));
   const failures = [];
+  // Cloudflare Workers limits subrequests per invocation. Cap total fetch attempts
+  // to stay well under the limit — skip remaining models for a provider once we
+  // hit a non-retryable error (402, 403, 401) instead of burning subrequests.
+  const MAX_SUBREQUESTS = 8;
+  let subrequests = 0;
 
   for (const provider of chain) {
+    let providerSkipped = false;
     for (const model of provider.models) {
+      if (subrequests >= MAX_SUBREQUESTS) {
+        failures.push(`${provider.name}: subrequest limit reached, skipping remaining models`);
+        break;
+      }
+      if (providerSkipped) break;
       if (typeof options.reserve === 'function') {
         let allowed = false;
         try { allowed = await options.reserve(provider.name); } catch { allowed = false; }
-        if (!allowed) { failures.push(`${provider.name}: configured quota cap reached`); break; }
+        if (!allowed) { failures.push(`${provider.name}: configured quota cap reached`); providerSkipped = true; break; }
       }
       const req = buildRequest(provider, model, messages, maxTokens, temperature);
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (subrequests >= MAX_SUBREQUESTS) break;
+        subrequests++;
         let response;
         try {
           response = await fetch(req.url, {
             method: 'POST', headers: req.headers, body: JSON.stringify(req.body),
-            // Cloudflare Workers: no explicit timeout needed — the platform handles it
           });
         } catch (e) {
           failures.push(`${provider.name} (${model}): ${e?.name || 'Error'}: ${String(e?.message || e).slice(0, 200)}`);
@@ -132,6 +144,13 @@ export async function generateWithFallback(env, messages, options = {}) {
         // 404 means model not found — try next model in the list
         if (response.status === 404) {
           failures.push(`${provider.name} (${model}): HTTP 404 model not found`);
+          break;
+        }
+        // 402 (payment required) or 403 (forbidden) — provider-level failure,
+        // skip all remaining models for this provider
+        if (response.status === 402 || response.status === 403 || response.status === 401) {
+          failures.push(`${provider.name} (${model}): HTTP ${response.status} — skipping remaining ${provider.models.length - 1} models for this provider`);
+          providerSkipped = true;
           break;
         }
         if (response.status === 429 && attempt < 2) {

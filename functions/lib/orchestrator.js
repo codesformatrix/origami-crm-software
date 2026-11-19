@@ -491,12 +491,11 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
 
       // Step 7: Create email record with idempotency key
       const draftRow = await DB.prepare("SELECT id FROM email_drafts WHERE contact_id=? AND step_number=?").bind(contactId, stepNumber).first();
-      const idempotencyKey = `contact_${contactId}_step_${stepNumber}`;
 
       await DB.prepare(`
-        INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,idempotency_key,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?)
-      `).bind(draftRow.id, contactId, effectiveStatus, sendAt, idempotencyKey, nowIso(), nowIso()).run();
+        INSERT OR IGNORE INTO emails(email_draft_id,contact_id,status,scheduled_at,created_at,updated_at)
+        VALUES(?,?,?,?,?,?)
+      `).bind(draftRow.id, contactId, effectiveStatus, sendAt, nowIso(), nowIso()).run();
 
       // Log: scheduled (or pending_review)
       await logStep(DB, contactId, stepNumber, effectiveStatus, `Email ${stepNumber} ${effectiveStatus === 'pending_review' ? 'held for review' : 'scheduled'} for ${sendAt} (UTC). Window: ${tz}.`, '', 'orchestrator');
