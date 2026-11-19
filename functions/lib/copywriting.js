@@ -662,7 +662,7 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
   const senderAddress = await DB.prepare("SELECT value FROM settings WHERE key='physical_mailing_address'").first();
   if (!String(senderAddress?.value || '').trim()) {
     // Mailing address is not set — use a default so scheduling doesn't block
-    await DB.prepare("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('physical_mailing_address','Origami Consulting',?)").bind(nowIso()).run();
+    await DB.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('physical_mailing_address','Origami Consulting')").run();
   }
   if (!contact.email) throw new Error('Add a prospect email before scheduling');
   const sendingTimezone = contact.timezone || company?.timezone || '';

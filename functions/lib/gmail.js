@@ -595,7 +595,9 @@ async function syncReplies(env, DB, token, connection, now) {
     historyId = String(profile.historyId);
   }
   const messages = []; let data = {}; let pageToken = '';
-  for (let page = 0; page < 5; page++) {
+  // Limit to 2 pages (200 messages max) per cron run to stay within Worker subrequest limits
+  const MAX_PAGES = 2;
+  for (let page = 0; page < MAX_PAGES; page++) {
     const query = new URLSearchParams({ startHistoryId: historyId, historyTypes: 'messageAdded', maxResults: '100' });
     if (pageToken) query.set('pageToken', pageToken);
     let response; try { response = await apiFetch(env, DB, `history?${query.toString()}`); } catch (error) { return { ok: false, reconnect: error instanceof GmailAuthError, transient: !(error instanceof GmailAuthError), error: String(error?.message || error) }; }
@@ -607,9 +609,13 @@ async function syncReplies(env, DB, token, connection, now) {
     pageToken = data.nextPageToken || '';
     if (!pageToken) break;
   }
-  if (pageToken) return { ok: false, transient: true, error: 'Gmail reply history is unusually large; sync will continue next cycle' };
+  // Hard cap on messages processed per invocation — each one needs 2-3 API calls
+  // and Cloudflare limits total subrequests per Worker invocation
+  const MAX_MESSAGES = 10;
+  const capped = messages.slice(0, MAX_MESSAGES);
+  if (messages.length > MAX_MESSAGES) console.log(`Gmail sync: ${messages.length - MAX_MESSAGES} messages deferred to next cycle`);
   const ownEmail = String(connection.email_address || '').toLowerCase();
-  for (const reference of messages) {
+  for (const reference of capped) {
     const threadId = String(reference.threadId || '');
     if (!threadId) continue;
     const sent = await DB.prepare("SELECT e.contact_id,e.email_draft_id,c.email,c.company_id FROM emails e JOIN contacts c ON c.id=e.contact_id WHERE e.thread_id=? AND e.status IN ('sent','replied') ORDER BY e.sent_at DESC LIMIT 1").bind(threadId).first();
