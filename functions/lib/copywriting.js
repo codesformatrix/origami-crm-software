@@ -620,6 +620,47 @@ export async function regenerateStep(env, DB, contactId, stepNumber) {
 }
 
 // ---- Score an edited draft ----
+async function loadContext(DB, contactId, unsubscribeUrl) {
+  const contact = await DB.prepare('SELECT * FROM contacts WHERE id=?').bind(contactId).first();
+  if (!contact) throw new Error('Prospect not found');
+  const company = await DB.prepare('SELECT * FROM companies WHERE id=?').bind(contact.company_id).first();
+  const notes = (await DB.prepare('SELECT * FROM research_notes WHERE contact_id=? ORDER BY fetched_at DESC, id DESC').bind(contactId).all()).results || [];
+  const latestNote = notes[0] || null;
+  const sentDrafts = (await DB.prepare("SELECT step_number,subject,body FROM email_drafts WHERE contact_id=? AND status='sent' ORDER BY step_number").bind(contactId).all()).results || [];
+  const linkedinPosts = (await DB.prepare("SELECT * FROM research_notes WHERE contact_id=? AND source_type='linkedin_manual' ORDER BY fetched_at DESC").bind(contactId).all()).results || [];
+  const replies = (await DB.prepare("SELECT * FROM replies WHERE prospect_id=? ORDER BY received_at DESC LIMIT 5").bind(contactId).all()).results || [];
+  const settings = (await DB.prepare("SELECT key,value FROM settings WHERE key IN ('sender_name','sender_company','physical_mailing_address','icp_authority','icp_company_size_min','icp_company_size_max','icp_technology_fit')").all()).results || [];
+  const profile = Object.fromEntries(settings.map((x) => [x.key, x.value]));
+  let research;
+  if (latestNote) {
+    research = {
+      summary: latestNote.summary || '',
+      pain_points: parseList(latestNote.pain_points),
+      talking_points: parseList(latestNote.talking_points),
+      icp_score: latestNote.icp_score,
+      icp_reason: latestNote.icp_reason || '',
+    };
+  } else {
+    research = {
+      summary: [company?.description, company?.recent_news, company?.what_they_do].filter(Boolean).join(' '),
+      pain_points: [],
+      talking_points: [company?.description, company?.recent_news].filter(Boolean),
+      icp_score: null,
+      icp_reason: '',
+    };
+  }
+  const linkedinText = linkedinPosts.map((p) => p.text || p.content || '').filter(Boolean).join('\n');
+  const freshContext = linkedinText;
+  return {
+    contact, company: company || {}, research, profile, sentDrafts, linkedinPosts, replies, freshContext,
+    searchResults: { text: '' },
+    icp: { authority: profile.icp_authority || '', min_size: profile.icp_company_size_min || '10', max_size: profile.icp_company_size_max || '500', fit: profile.icp_technology_fit || '' },
+    context: buildUserContext(contact, company || {}, research, profile, {
+      authority: profile.icp_authority || '', min_size: profile.icp_company_size_min || '10', max_size: profile.icp_company_size_max || '500', technology_fit: profile.icp_technology_fit || ''
+    }, unsubscribeUrl, freshContext, sentDrafts, replies),
+  };
+}
+
 export async function scoreEditedDraft(env, DB, draftId, subject, body) {
   const draft = await DB.prepare('SELECT * FROM email_drafts WHERE id=?').bind(draftId).first();
   if (!draft) throw new Error('Draft not found');
