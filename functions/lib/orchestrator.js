@@ -47,9 +47,9 @@ function normalizeSubject(subject, step, company) {
   return s || `about ${company || 'your company'}`;
 }
 
-function sanitizeBody(body, unsubscribeUrl) {
+function sanitizeBody(body, unsubscribeUrl, includeUnsubscribe = true) {
   let b = String(body || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  if (unsubscribeUrl && !b.includes(unsubscribeUrl)) {
+  if (includeUnsubscribe && unsubscribeUrl && !b.includes(unsubscribeUrl)) {
     b = b.replace(/\s*$/, '\n\n') + `\n\nUnsubscribe: ${unsubscribeUrl}\n`;
   }
   return b.trim();
@@ -269,8 +269,6 @@ Hard rules:
 - Subject line: lowercase, 2-5 words, curious but not clickbait.
 ' + stepRules + '
 
-Include the exact unsubscribe URL in the footer.
-
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`;
 
   const user = JSON.stringify({
@@ -303,7 +301,7 @@ Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook
   return {
     step_number: stepNumber,
     subject: normalizeSubject(row.subject, stepNumber, context.prospect.company),
-    body: sanitizeBody(row.body, context.unsubscribe_url),
+    body: sanitizeBody(row.body, context.unsubscribe_url, false),
     unsubscribe_url: context.unsubscribe_url,
     hook_used: row.hook_used || '',
     sources: Array.isArray(row.sources) ? row.sources : [],

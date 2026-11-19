@@ -51,13 +51,13 @@ function actualWordCount(body, unsubscribeUrl) {
 }
 function sentenceCount(prose) { return (String(prose || '').match(/[.!?](?=\s|$)/g) || []).length; }
 function subjectWordCount(subject) { return (String(subject || '').trim().split(/\s+/).filter(Boolean)).length; }
-function sanitizeBody(body, unsubscribeUrl) {
+function sanitizeBody(body, unsubscribeUrl, includeUnsubscribe = true) {
   let prose = String(body || '').replaceAll(unsubscribeUrl || '\u0000', '').replace(/^\s*Unsubscribe:\s*.*$/gim, '').trim();
   prose = prose.replace(/[-\u2010-\u2015\u2212]/g, ' ')
     .replace(/\bI hope this finds you well\b[.!]?/ig, '')
     .replace(/\bjust checking in\b/ig, '');
   prose = prose.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return `${prose}\n\nUnsubscribe: ${unsubscribeUrl}`;
+  return includeUnsubscribe && unsubscribeUrl ? `${prose}\n\nUnsubscribe: ${unsubscribeUrl}` : prose;
 }
 function normalizeSubject(subject, step, company) {
   let value = String(subject || '').trim().toLowerCase().replace(/[\u2010-\u2015\u2212-]/g, ' ').replace(/\s+/g, ' ');
@@ -92,7 +92,7 @@ function checkConstraints(draft, unsubscribeUrl, research = {}) {
   if (subjectWordCount(draft.subject) < 2 || subjectWordCount(draft.subject) > 5) issues.push('Subject must contain 2 to 5 words.');
   if (/\b(urgent|act now|limited time|exclusive|secret|you will not believe|you won't believe)\b/i.test(draft.subject)) issues.push('Remove clickbait or pressure language from the subject.');
   if (draft.subject !== draft.subject.toLowerCase()) issues.push('Subject must be lowercase.');
-  if (!unsubscribeUrl || !String(draft.body || '').includes(unsubscribeUrl)) issues.push('The unsubscribe link is missing.');
+  if (!unsubscribeUrl) issues.push('The unsubscribe link is missing.');
   if (/[—–]/.test(prose) || /(?:^|\s)[-](?:\s|$)/.test(prose)) issues.push('Remove dash punctuation from the email copy.');
   if (/i hope this finds you well|leverage|streamline|solutions|synergy|unlock|game.?changer|seamless|cutting.?edge|robust|delve into|revolutionary/i.test(prose)) issues.push('Remove generic or buzzword language.');
   if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(draft.body)) issues.push('No bullet points allowed.');
@@ -342,8 +342,6 @@ Hard rules:
 - Subject line: lowercase, 2-5 words, curious but not clickbait.
 ' + stepRules + '
 
-Include the exact unsubscribe URL in the footer.
-
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`;
   const user = JSON.stringify({
     context,
@@ -367,7 +365,7 @@ Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook
   const reject = checkAutoReject(row.body || '', row.subject || '');
   if (reject) throw new Error(`Auto-reject: ${reject}`);
 
-  return { step_number: stepNumber, subject: normalizeSubject(row.subject, stepNumber, context.prospect.company), body: sanitizeBody(row.body, context.unsubscribe_url), unsubscribe_url: context.unsubscribe_url, hook_used: row.hook_used || '', sources: Array.isArray(row.sources) ? row.sources : [] };
+  return { step_number: stepNumber, subject: normalizeSubject(row.subject, stepNumber, context.prospect.company), body: sanitizeBody(row.body, context.unsubscribe_url, false), unsubscribe_url: context.unsubscribe_url, hook_used: row.hook_used || '', sources: Array.isArray(row.sources) ? row.sources : [] };
 }
 
 // Auto-reject validation: returns a rejection reason string if the draft
@@ -632,7 +630,7 @@ export async function scoreEditedDraft(env, DB, draftId, subject, body) {
   const threadSubject = Number(draft.step_number) === 1
     ? normalizeSubject(subject, 1, row.context.prospect.company)
     : (first?.subject || normalizeSubject(subject, draft.step_number, row.context.prospect.company));
-  const editedDraft = { step_number: Number(draft.step_number), subject: threadSubject, body: sanitizeBody(body, draft.unsubscribe_url), unsubscribe_url: draft.unsubscribe_url };
+  const editedDraft = { step_number: Number(draft.step_number), subject: threadSubject, body: sanitizeBody(body, draft.unsubscribe_url, false), unsubscribe_url: draft.unsubscribe_url };
   const scored = (await scoreDrafts(env, DB, [editedDraft], { prospect: row.context.prospect, research: row.context.research }))[0];
   await DB.prepare("UPDATE email_drafts SET subject=?,body=?,personalization_score=?,score_breakdown=?,score_critique=?,word_count=?,constraints_valid=?,is_user_edited=1,edited_at=? WHERE id=?").bind(
     scored.subject, scored.body, scored.scoring.score, JSON.stringify(scored.scoring.breakdown), scored.scoring.critique, scored.scoring.word_count, scored.scoring.constraints_valid ? 1 : 0, nowIso(), draftId).run();
@@ -676,7 +674,7 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
   if (drafts.some((d) => d.status === 'sent')) throw new Error('This sequence already has sent steps. It cannot be restarted from step 1.');
 
   // Check that available drafts meet quality requirements
-  const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 50 || Number(d.constraints_valid) !== 1 || !d.unsubscribe_url || !String(d.body || '').includes(d.unsubscribe_url));
+  const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 50 || Number(d.constraints_valid) !== 1 || !d.unsubscribe_url);
   if (lowQuality.length) throw new Error(`${lowQuality.length} draft(s) must score at least 70 and pass copy rules before scheduling. Regenerate or edit them first.`);
 
   const stamp = nowIso();
