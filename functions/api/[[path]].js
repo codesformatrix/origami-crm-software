@@ -7,7 +7,7 @@ import { configuredProviders, generateWithFallback } from '../lib/llm.js';
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
 import { enqueueCopywritingJob, generateStepOnDemand, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft, refreshScheduledDrafts } from '../lib/copywriting.js';
 import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
-import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken, runGmailSendBatch } from '../lib/gmail.js';
+import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken, runGmailSendBatch, ensureGmailDrafts } from '../lib/gmail.js';
 import { isEmailSuppressed, rememberSuppression, anonymizeSuppression, normalizedDomain, safeDkimSelector, warmupCap } from '../lib/compliance.js';
 import { runOutreachOrchestrator } from '../lib/orchestrator.js';
 
@@ -376,7 +376,10 @@ export async function onRequest(context) {
       // Step 6: Timezone batch: detect timezones for contacts that still need them
       try { results.timezone = await runTimezoneBatch(runEnv, 10); }
       catch (e) { results.timezone_error = String(e?.message || e).slice(0, 200); }
-      // Step 7: Gmail send batch: pick up due emails and send via Gmail API
+      // Step 7: Ensure Gmail drafts exist for all scheduled emails (Option C: hybrid draft + cron send)
+      try { results.ensure_drafts = await ensureGmailDrafts(runEnv, now); }
+      catch (e) { results.ensure_drafts_error = String(e?.message || e).slice(0, 200); }
+      // Step 8: Gmail send batch: pick up due emails and send via Gmail API (uses drafts.send when a draft exists)
       try { results.gmail = await runGmailSendBatch(runEnv, now); }
       catch (e) { results.gmail_error = String(e?.message || e).slice(0, 200); }
       return json({ ok: true, timestamp: now.toISOString(), ...results });
@@ -1084,7 +1087,7 @@ export async function onRequest(context) {
         enrichment_jobs: ["contact_id","status","stage","progress","detail","error","attempts","queued_at","started_at","finished_at","updated_at"],
         copywriting_jobs: ["contact_id","status","stage","progress","detail","error","unsubscribe_url","attempts","queued_at","started_at","finished_at","updated_at","sequence_id","enrollment_id"],
         email_drafts: ["contact_id","step_number","status","subject","body","unsubscribe_url","personalization_score","score_breakdown","score_critique","word_count","constraints_valid","is_user_edited","generated_at","edited_at","scheduled_at","sent_message_id"],
-        emails: ["email_draft_id","contact_id","status","scheduled_at","next_attempt_at","attempt_count","gmail_message_id","thread_id","rfc_message_id","last_error","sent_at","created_at","updated_at","sequence_id","enrollment_id"],
+        emails: ["email_draft_id","contact_id","status","scheduled_at","next_attempt_at","attempt_count","gmail_message_id","gmail_draft_id","thread_id","rfc_message_id","last_error","sent_at","created_at","updated_at","sequence_id","enrollment_id"],
         email_send_attempts: ["email_id","attempt_number","status","http_status","error","retry_at","attempted_at","finished_at"],
         bounce_events: ["contact_id","email_id","domain","gmail_message_id","detected_at","detail"],
         domain_suppressions: ["domain","bounce_count","reason","created_at","updated_at"],

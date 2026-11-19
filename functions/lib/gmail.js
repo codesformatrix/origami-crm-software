@@ -486,6 +486,63 @@ function mimeMessage({ fromName, fromEmail, to, subject, body, replyHeaders }) {
   const encodedBody = base64Standard(body).match(/.{1,76}/g)?.join('\r\n') || '';
   return `${headers.join('\r\n')}\r\n\r\n${encodedBody}`;
 }
+async function ensureDraftColumn(DB) {
+  try { await DB.prepare('ALTER TABLE emails ADD COLUMN gmail_draft_id TEXT').run(); } catch { /* column already exists */ }
+}
+async function createGmailDraft(env, DB, { fromName, fromEmail, to, subject, body, replyHeaders }) {
+  const message = mimeMessage({ fromName, fromEmail, to, subject, body, replyHeaders });
+  const raw = base64Text(message);
+  const response = await apiFetch(env, DB, 'drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: { raw } }) }).catch((e) => ({ ok: false, status: 0, json: async () => ({ error: { message: String(e?.message || e) } }) }));
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.id) throw new Error(`Gmail draft creation failed (${response.status}): ${String(data?.error?.message || data?.error || 'unknown')}`);
+  return data.id;
+}
+export async function ensureGmailDrafts(env, now = new Date()) {
+  const DB = env.DB;
+  await ensureDraftColumn(DB);
+  const connection = await DB.prepare('SELECT * FROM gmail_connections WHERE id=1').first();
+  if (!connection || connection.status !== 'connected') return { status: 'skipped', created: 0, reason: 'Gmail not connected' };
+  let token = null;
+  if (connection.connection_type !== 'smtp') {
+    try { token = await accessToken(env, DB); }
+    catch { return { status: 'skipped', created: 0, reason: 'Could not get Gmail token' }; }
+  }
+  const candidates = (await DB.prepare(`SELECT e.id,e.email_draft_id,d.subject,d.body AS draft_body,d.step_number,d.unsubscribe_url,d.contact_id,
+      c.name AS contact_name,c.email AS recipient_email,c.status AS contact_status,c.cadence,c.timezone AS prospect_timezone,
+      co.timezone AS company_timezone,sn.value AS sender_name,sc.value AS sender_company,addr.value AS mailing_address
+    FROM emails e JOIN email_drafts d ON d.id=e.email_draft_id JOIN contacts c ON c.id=e.contact_id
+    JOIN companies co ON co.id=c.company_id
+    LEFT JOIN settings sn ON sn.key='sender_name' LEFT JOIN settings sc ON sc.key='sender_company'
+    LEFT JOIN settings addr ON addr.key='physical_mailing_address'
+    WHERE e.status='scheduled' AND (e.gmail_draft_id IS NULL OR e.gmail_draft_id='')
+    ORDER BY e.scheduled_at LIMIT 5`).all()).results || [];
+  let created = 0;
+  for (const e of candidates) {
+    try {
+      const senderName = e.sender_name || e.sender_company || 'Origami Consulting';
+      const senderCompany = String(e.sender_company || 'Origami Consulting').trim() || 'Origami Consulting';
+      const address = String(e.mailing_address || '').trim();
+      let draftBody = String(e.draft_body || '').replace(/\r\n/g, '\n').replace(/\n?\n?Origami Consulting\n[\s\S]*?\n\nUnsubscribe:/i, '\n\nUnsubscribe:');
+      draftBody = draftBody.replace(/\n*Unsubscribe:\s*.*$/i, '').trim();
+      if (!draftBody.includes(address)) draftBody = `${draftBody}${draftBody ? '\n\n' : ''}${senderCompany}\n${address}`;
+      draftBody = `${draftBody.trim()}\n\nUnsubscribe: ${e.unsubscribe_url}`;
+      const previous = await DB.prepare("SELECT thread_id,rfc_message_id FROM emails WHERE contact_id=? AND status='sent' ORDER BY sent_at DESC,id DESC LIMIT 1").bind(e.contact_id).first();
+      const threadId = previous?.thread_id || '';
+      const references = (await DB.prepare("SELECT rfc_message_id FROM emails WHERE contact_id=? AND status='sent' AND rfc_message_id<>'' ORDER BY sent_at,id LIMIT 4").bind(e.contact_id).all()).results.map((x) => x.rfc_message_id);
+      const draftId = await createGmailDraft(env, DB, {
+        fromName: senderName, fromEmail: connection.email_address, to: e.recipient_email,
+        subject: e.subject, body: draftBody,
+        replyHeaders: { 'List-Unsubscribe': `<${e.unsubscribe_url}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+          ...(previous?.rfc_message_id ? { 'In-Reply-To': previous.rfc_message_id, References: references.join(' ') } : {}) }
+      });
+      await DB.prepare('UPDATE emails SET gmail_draft_id=?,updated_at=? WHERE id=?').bind(draftId, isoNow(now), e.id).run();
+      created++;
+    } catch (err) {
+      await DB.prepare('UPDATE emails SET last_error=?,updated_at=? WHERE id=?').bind(String(err?.message || err).slice(0, 500), isoNow(now), e.id).run();
+    }
+  }
+  return { status: 'done', created };
+}
 async function appendAttempt(DB, emailId, attemptNo, status, httpStatus, error, retryAt = null, finishedAt = null) {
   await DB.prepare('INSERT INTO email_send_attempts(email_id,attempt_number,status,http_status,error,retry_at,attempted_at,finished_at) VALUES(?,?,?,?,?,?,?,?)')
     .bind(emailId, attemptNo, status, httpStatus, String(error || '').slice(0, 1000), retryAt, isoNow(), finishedAt).run();
@@ -572,7 +629,7 @@ async function scheduleNext(DB, contact, currentDraft, now, queueRow = {}) {
 }
 async function recordSent(DB, row, draft, contact, gmailMessage, rfcMessageId, body, now) {
   const sentAt = isoNow(now); const sentDate = todayUtc(now);
-  await DB.prepare("UPDATE emails SET status='sent',gmail_message_id=?,thread_id=?,rfc_message_id=?,last_error='',sent_at=?,next_attempt_at=NULL,updated_at=? WHERE id=?")
+  await DB.prepare("UPDATE emails SET status='sent',gmail_message_id=?,gmail_draft_id=NULL,thread_id=?,rfc_message_id=?,last_error='',sent_at=?,next_attempt_at=NULL,updated_at=? WHERE id=?")
     .bind(gmailMessage.id || '', gmailMessage.threadId || '', rfcMessageId || '', sentAt, sentAt, row.id).run();
   const messageRow = await DB.prepare("INSERT INTO messages(contact_id,channel,direction,subject,body,sent_at,created_at,template_id,email_draft_id,gmail_message_id,thread_id) VALUES(?,'email','out',?,?,?,?,NULL,?,?,?)")
     .bind(contact.id, draft.subject, body, sentDate, sentAt, draft.id, gmailMessage.id || '', gmailMessage.threadId || '').run();
@@ -674,6 +731,7 @@ async function syncReplies(env, DB, token, connection, now) {
 }
 export async function runGmailSendBatch(env, now = new Date()) {
   const DB = env.DB;
+  await ensureDraftColumn(DB);
   const stale = isoNow(new Date(now.getTime() - 5 * 60 * 1000));
   await DB.prepare("UPDATE emails SET status='failed',last_error='Worker stopped during send; check Gmail Sent before manual retry',updated_at=? WHERE status='sending' AND updated_at<?").bind(isoNow(now), stale).run();
   await reconcilePauseRules(DB);
@@ -820,9 +878,14 @@ export async function runGmailSendBatch(env, now = new Date()) {
         data = { error: { message: String(e?.message || e) } };
       }
     } else {
-      // OAuth API send path (original)
-      response = await apiFetch(env, DB, 'messages/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ raw, ...(threadId ? { threadId } : {}) }) }).catch((e) => ({ ok: false, status: 0, json: async () => ({ error: { message: String(e?.message || e) } }) }));
-      data = await response.json().catch(() => ({}));
+      // OAuth API send path — use drafts.send when a Gmail draft exists (Option C: hybrid draft + cron send)
+      if (email.gmail_draft_id) {
+        response = await apiFetch(env, DB, `drafts/${encodeURIComponent(email.gmail_draft_id)}/send`, { method: 'POST', headers: { 'content-type': 'application/json' } }).catch((e) => ({ ok: false, status: 0, json: async () => ({ error: { message: String(e?.message || e) } }) }));
+        data = await response.json().catch(() => ({}));
+      } else {
+        response = await apiFetch(env, DB, 'messages/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ raw, ...(threadId ? { threadId } : {}) }) }).catch((e) => ({ ok: false, status: 0, json: async () => ({ error: { message: String(e?.message || e) } }) }));
+        data = await response.json().catch(() => ({}));
+      }
     }
     finalStatus = response.status;
     if (response.ok && data.id && data.threadId) {
@@ -891,7 +954,7 @@ export async function resumePausedSends(env, DB) {
 export async function markDraftSentManually(DB, contactId, draftId, sentAt = new Date()) {
   const row = await DB.prepare('SELECT e.id AS email_id,e.sequence_id,e.enrollment_id,d.id AS draft_id,d.step_number,d.unsubscribe_url,d.body,d.subject FROM email_drafts d LEFT JOIN emails e ON e.email_draft_id=d.id WHERE d.id=? AND d.contact_id=?').bind(draftId, contactId).first();
   if (!row) return;
-  if (row.email_id) await DB.prepare("UPDATE emails SET status='sent_manual',sent_at=?,updated_at=?,last_error='Logged as sent manually outside the Gmail send engine' WHERE id=? AND status IN ('scheduled','retry_wait')")
+  if (row.email_id) await DB.prepare("UPDATE emails SET status='sent_manual',gmail_draft_id=NULL,sent_at=?,updated_at=?,last_error='Logged as sent manually outside the Gmail send engine' WHERE id=? AND status IN ('scheduled','retry_wait')")
     .bind(isoNow(sentAt), isoNow(sentAt), row.email_id).run();
   const contact = await DB.prepare('SELECT id,status,cadence FROM contacts WHERE id=?').bind(contactId).first();
   if (contact) await scheduleNext(DB, contact, { id: row.draft_id, step_number: row.step_number }, sentAt, row);
