@@ -275,9 +275,9 @@ function localWindow(timezone, now) {
   try {
     const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
       .formatToParts(now).map((p) => [p.type, p.value]));
-    const weekday = ['Mon', 'Tue', 'Wed', 'Thu'].includes(parts.weekday);
+    const weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(parts.weekday);
     const hour = Number(parts.hour); const minute = Number(parts.minute);
-    return { valid: true, allowed: weekday && hour >= 9 && hour < 11, weekday: parts.weekday, hour, minute };
+    return { valid: true, allowed: weekday && hour >= 9 && hour < 17, weekday: parts.weekday, hour, minute };
   } catch { return { valid: false, allowed: false }; }
 }
 function localCalendarParts(timezone, date) {
@@ -304,9 +304,9 @@ export function scheduleBusinessDays(now, delayDays, timezone) {
     const weekday = date.getUTCDay();
     if (weekday !== 0 && weekday !== 6) count++;
   }
-  // Automated sends are only allowed Monday through Thursday, 9–11 local.
-  // Roll a Friday/weekend due date to Monday's opening of the window.
-  while ([0, 5, 6].includes(date.getUTCDay())) date.setUTCDate(date.getUTCDate() + 1);
+  // Automated sends are allowed Monday through Friday, 9 AM to 5 PM local.
+  // Roll a weekend due date to Monday's opening of the window.
+  while ([0, 6].includes(date.getUTCDay())) date.setUTCDate(date.getUTCDate() + 1);
   p = localCalendarParts(timezone, new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12)));
   return zonedLocalToUtc(timezone, date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), 9, 0);
 }
