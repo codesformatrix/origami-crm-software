@@ -82,6 +82,23 @@ export function configuredProviders(env = {}) {
   return providers(env).map(({ name, models }) => ({ name, model: models[0] }));
 }
 
+export async function checkProviderConnectivity(env) {
+  const chain = providers(env || {});
+  const results = [];
+  for (const provider of chain) {
+    const baseUrl = provider.name === 'gemini'
+      ? 'https://generativelanguage.googleapis.com'
+      : provider.baseUrl || (provider.name === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.groq.com/openai/v1');
+    try {
+      const resp = await fetch(baseUrl, { method: 'GET' });
+      results.push({ provider: provider.name, baseUrl, reachable: true, status: resp.status });
+    } catch (e) {
+      results.push({ provider: provider.name, baseUrl, reachable: false, error: String(e?.message || e).slice(0, 300) });
+    }
+  }
+  return results;
+}
+
 export async function generateWithFallback(env, messages, options = {}) {
   const chain = providers(env || {});
   if (!chain.length) {
@@ -106,9 +123,10 @@ export async function generateWithFallback(env, messages, options = {}) {
         try {
           response = await fetch(req.url, {
             method: 'POST', headers: req.headers, body: JSON.stringify(req.body),
+            // Cloudflare Workers: no explicit timeout needed — the platform handles it
           });
-        } catch {
-          failures.push(`${provider.name} (${model}): network error`);
+        } catch (e) {
+          failures.push(`${provider.name} (${model}): ${e?.name || 'Error'}: ${String(e?.message || e).slice(0, 200)}`);
           break;
         }
         // 404 means model not found — try next model in the list

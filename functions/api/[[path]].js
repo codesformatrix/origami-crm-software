@@ -3,7 +3,7 @@
 
 import { detectLocation, followUpDate, smartCadence, windowStatus, nowIn, tzLabel, tzShort, minutesToText } from '../lib/engine.js';
 import { buildInsights, buildPlan, scoreContact } from '../lib/coach.js';
-import { configuredProviders, generateWithFallback } from '../lib/llm.js';
+import { configuredProviders, generateWithFallback, checkProviderConnectivity } from '../lib/llm.js';
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
 import { enqueueCopywritingJob, generateStepOnDemand, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft, refreshScheduledDrafts } from '../lib/copywriting.js';
 import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
@@ -1193,6 +1193,11 @@ export async function onRequest(context) {
     }
 
 
+    /* ------------------------------------------------------ LLM provider connectivity check */
+    if (p0 === "llm" && p1 === "connectivity" && method === "GET") {
+      const results = await checkProviderConnectivity(env);
+      return json({ ok: true, results, tested_at: new Date().toISOString() });
+    }
     /* ------------------------------------------------------ sequence health */
     if (p0 === "sequence-health" && !p1 && method === "GET") {
       const DB = db();
