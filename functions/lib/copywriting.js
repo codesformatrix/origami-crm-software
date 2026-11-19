@@ -536,7 +536,7 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
 export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
   const DB = env.DB;
   const staleBefore = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-  await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',progress=0,detail='Copywriter stopped unexpectedly; manually retry',error='stale in-progress job',updated_at=? WHERE status='generating' AND started_at<?").bind(nowIso(), staleBefore).run();
+  await DB.prepare("UPDATE copywriting_jobs SET status='failed',stage='failed',progress=0,detail='Copywriter stopped unexpectedly; manually retry',error='stale in-progress job',updated_at=? WHERE status='generating' AND COALESCE(started_at,updated_at,queued_at)<?").bind(nowIso(), staleBefore).run();
   // Reset stale counters so failed attempts don't exhaust caps permanently
   const { hour, day } = dateParts();
   await DB.prepare("UPDATE provider_usage SET used=0, updated_at=? WHERE provider='copywriting' AND window_type='hour' AND window_key=?").bind(nowIso(), hour).run();
@@ -676,7 +676,7 @@ export async function scoreEditedDraft(env, DB, draftId, subject, body) {
   await DB.prepare("UPDATE email_drafts SET subject=?,body=?,personalization_score=?,score_breakdown=?,score_critique=?,word_count=?,constraints_valid=?,is_user_edited=1,edited_at=? WHERE id=?").bind(
     scored.subject, scored.body, scored.scoring.score, JSON.stringify(scored.scoring.breakdown), scored.scoring.critique, scored.scoring.word_count, scored.scoring.constraints_valid ? 1 : 0, nowIso(), draftId).run();
   const updated = await DB.prepare('SELECT * FROM email_drafts WHERE id=?').bind(draftId).first();
-  return { draft: updated, needs_review: Number(updated.personalization_score) < 70 || Number(updated.constraints_valid) !== 1 };
+  return { draft: updated, needs_review: Number(updated.personalization_score) < 50 || Number(updated.constraints_valid) !== 1 };
 }
 
 // ---- Schedule: now allows scheduling with any number of generated drafts ----
@@ -716,7 +716,7 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
 
   // Check that available drafts meet quality requirements
   const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 50 || Number(d.constraints_valid) !== 1 || !d.unsubscribe_url);
-  if (lowQuality.length) throw new Error(`${lowQuality.length} draft(s) must score at least 70 and pass copy rules before scheduling. Regenerate or edit them first.`);
+  if (lowQuality.length) throw new Error(`${lowQuality.length} draft(s) must score at least 50 and pass copy rules before scheduling. Regenerate or edit them first.`);
 
   const stamp = nowIso();
   let enrollment = null; let sequenceId = Number(options.sequence_id || 0) || null;
