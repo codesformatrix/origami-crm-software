@@ -4,6 +4,21 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function providers(env) {
   const out = [];
+  // APInex: primary provider — OpenAI-compatible gateway with free models, 1M context
+  if (env.APINEX_API_KEY) {
+    out.push({
+      name: 'apinex', key: env.APINEX_API_KEY,
+      baseUrl: 'https://api.apinex.bond/v1',
+      models: [
+        'free/gpt-6-luna',
+        'free/qwen-3.8-max',
+        'free/glm-5.3-flash',
+        'free/gemini-4-hydrogen',
+        'free/deepseek-v4.1-flash',
+        'free/kimi-k3',
+      ],
+    });
+  }
   // Groq: try llama-3.3-70b-versatile first, fall back to llama-3.1-8b-instant if 404
   if (env.GROQ_API_KEY) {
     out.push({
@@ -43,7 +58,9 @@ function buildRequest(provider, model, messages, maxTokens, temperature) {
     };
   }
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.key}` };
-  let url = 'https://api.groq.com/openai/v1/chat/completions';
+  let url = provider.baseUrl
+    ? `${provider.baseUrl}/chat/completions`
+    : 'https://api.groq.com/openai/v1/chat/completions';
   if (provider.name === 'openrouter') {
     url = 'https://openrouter.ai/api/v1/chat/completions';
     headers['HTTP-Referer'] = 'https://origami.consulting';
