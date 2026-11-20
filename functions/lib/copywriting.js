@@ -51,13 +51,13 @@ function actualWordCount(body, unsubscribeUrl) {
 }
 function sentenceCount(prose) { return (String(prose || '').match(/[.!?](?=\s|$)/g) || []).length; }
 function subjectWordCount(subject) { return (String(subject || '').trim().split(/\s+/).filter(Boolean)).length; }
-function sanitizeBody(body, unsubscribeUrl, includeUnsubscribe = true) {
+function sanitizeBody(body, unsubscribeUrl, includeUnsubscribe = false) {
   let prose = String(body || '').replaceAll(unsubscribeUrl || '\u0000', '').replace(/^\s*Unsubscribe:\s*.*$/gim, '').trim();
   prose = prose.replace(/[-\u2010-\u2015\u2212]/g, ' ')
     .replace(/\bI hope this finds you well\b[.!]?/ig, '')
     .replace(/\bjust checking in\b/ig, '');
   prose = prose.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return includeUnsubscribe && unsubscribeUrl ? `${prose}\n\nUnsubscribe: ${unsubscribeUrl}` : prose;
+  return prose;
 }
 function normalizeSubject(subject, step, company) {
   let value = String(subject || '').trim().toLowerCase().replace(/[\u2010-\u2015\u2212-]/g, ' ').replace(/\s+/g, ' ');
@@ -88,11 +88,11 @@ function checkConstraints(draft, unsubscribeUrl, research = {}) {
   if (draft.step_number > 1 && draft.step_number !== 4 && (count < 20 || count > 60)) issues.push('Follow ups must be shorter than touch 1 (20 to 60 words).');
   if (draft.step_number === 4 && count > 60) issues.push('Breakup email must be shorter (under 60 words).');
   const prose = String(draft.body || '').replaceAll(unsubscribeUrl, '').replace(/^\s*Unsubscribe:\s*.*$/gim, '').trim();
-  if (draft.step_number === 4 && sentenceCount(prose) !== 2) issues.push('The breakup email must contain exactly two sentences before the unsubscribe line.');
+  if (draft.step_number === 4 && sentenceCount(prose) !== 2) issues.push('The breakup email must contain exactly two sentences.');
   if (subjectWordCount(draft.subject) < 2 || subjectWordCount(draft.subject) > 5) issues.push('Subject must contain 2 to 5 words.');
   if (/\b(urgent|act now|limited time|exclusive|secret|you will not believe|you won't believe)\b/i.test(draft.subject)) issues.push('Remove clickbait or pressure language from the subject.');
   if (draft.subject !== draft.subject.toLowerCase()) issues.push('Subject must be lowercase.');
-  if (!unsubscribeUrl) issues.push('The unsubscribe link is missing.');
+  if (!unsubscribeUrl) issues.push('Missing unsubscribe token for tracking.');
   if (/[—–]/.test(prose) || /(?:^|\s)[-](?:\s|$)/.test(prose)) issues.push('Remove dash punctuation from the email copy.');
   if (/i hope this finds you well|leverage|streamline|solutions|synergy|unlock|game.?changer|seamless|cutting.?edge|robust|delve into|revolutionary/i.test(prose)) issues.push('Remove generic or buzzword language.');
   if (/^\s*[•·●○◆■□▪◦*-]\s/m.test(draft.body)) issues.push('No bullet points allowed.');
@@ -119,7 +119,7 @@ function normalizeScore(score, draft, unsubscribeUrl, research = {}) {
   return { score: final, breakdown: { ...dims, constraints_valid: constraints.valid, issues: constraints.issues }, critique, word_count: constraints.word_count, constraints_valid: constraints.valid };
 }
 async function scoreDrafts(env, DB, drafts, context) {
-  const system = `You are a strict, fair email copy editor. Score each draft from 0 to 100 on five dimensions. Return JSON only: {"scores":[{"step_number":1,"word_count":0,"personalization_depth":0,"cta_clarity":0,"subject_line_strength":0,"spam_safety":0,"critique":"specific changes"}]}. Use these dimensions: word_count means correct length for its step (touch 1 is 60 to 110 words, follow ups shorter); personalization_depth means it cites supplied research accurately and opens with a specific detail; cta_clarity means one clear interest check or 15 minute invitation; subject_line_strength means 2 to 5 lowercase relevant words; spam_safety is 100 when no spam triggers and 0 when many. Never reward invented facts. Critique must be brief, concrete, and kind. Unsubscribe footer is required and is not prose. A draft with any dash mark, bullet, banned buzzword (leverage, streamline, solutions, synergy), generic greeting, or unverifiable claim must score 0 on spam_safety and personalization_depth.`;
+  const system = `You are a strict, fair email copy editor. Score each draft from 0 to 100 on five dimensions. Return JSON only: {"scores":[{"step_number":1,"word_count":0,"personalization_depth":0,"cta_clarity":0,"subject_line_strength":0,"spam_safety":0,"critique":"specific changes"}]}. Use these dimensions: word_count means correct length for its step (touch 1 is 60 to 110 words, follow ups shorter); personalization_depth means it cites supplied research accurately and opens with a specific detail; cta_clarity means one clear interest check or 15 minute invitation; subject_line_strength means 2 to 5 lowercase relevant words; spam_safety is 100 when no spam triggers and 0 when many. Never reward invented facts. Critique must be brief, concrete, and kind. No links or footers should appear in the email body. A draft with any dash mark, bullet, banned buzzword (leverage, streamline, solutions, synergy), generic greeting, or unverifiable claim must score 0 on spam_safety and personalization_depth.`;
   const user = JSON.stringify({ prospect: context.prospect, research: context.research, drafts: drafts.map((d) => ({ step_number: d.step_number, subject: d.subject, body: d.body, target_length: d.step_number === 1 ? 'under 120 words' : '20 to 60 words', breakup: d.step_number === 4 })) });
   const response = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: user }], {
     maxTokens: 1200, temperature: 0.1, reserve: (provider) => providerReserve(DB, provider),
@@ -290,7 +290,7 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
       subject: 'Use one shared 2 to 5 word lowercase subject for all four emails so Gmail threads correctly. Keep it relevant and curious, never clickbait.',
       signature: 'Use only the supplied sender name and company if signing. The mailing address is context only. Do not invent facts or claims.',
       location: 'If the prospect location is available, write with local context awareness: write as someone who knows their market and environment, and reference the location naturally when relevant. Never mention the timezone mechanically and never invent local facts.',
-      unsubscribe: `Include this exact link in the footer of every email: ${unsubscribeUrl}`,
+      unsubscribe: 'Do not include any links, unsubscribe footers, or URLs in the email body.',
       fresh_context: 'Use the fresh_context field for the most recent information about the prospect and company. Incorporate recent news, developments, or context naturally into the email hook.',
       icp: { authority: icp.authority || '', company_size: `${icp.min_size || '10'} to ${icp.max_size || '500'}`, technology_services_fit: icp.technology_fit || '' },
     },
@@ -304,7 +304,7 @@ async function generateSingleStep(env, DB, context, stepNumber, critique = null)
   const stepRules = stepNumber === 1
     ? 'Touch 1: 60 to 110 words. Open with the prospect\'s first name, then one specific detail from the research. Tie it to a real problem they likely have. Ask one low-pressure question.'
     : stepNumber === 4
-    ? 'Breakup email: shorter, two sentences before the unsubscribe footer. Refer naturally to the previous email and add one new distinct insight.'
+    ? 'Breakup email: shorter, two sentences. Refer naturally to the previous email and add one new distinct insight.'
     : 'Follow up: shorter than touch 1. Refer naturally to the previous email and add one new distinct angle nothing earlier touched.';
   const system = isRevision
     ? `You are Ali, a freelance business development person who writes cold emails that actually get replies. Your writing sounds like a competent human sent it from their phone — short sentences, natural rhythm, zero corporate polish. You read the prospect's company before writing and reference something real from their world. The email should feel like it was written for this specific person, not templated.
@@ -320,7 +320,7 @@ Hard rules:
 - Never repeat an angle or phrase from earlier emails in the thread.
 - Subject line: lowercase, 2-5 words, curious but not clickbait.
 
-Apply the critique to the draft and fix the flagged issues. Keep the exact step number, unsubscribe URL, and length rules.
+Apply the critique to the draft and fix the flagged issues. Keep the exact step number and length rules.
 
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`
     : `You are Ali, a freelance business development person who writes cold emails that actually get replies. Your writing sounds like a competent human sent it from their phone — short sentences, natural rhythm, zero corporate polish. You read the prospect's company before writing and reference something real from their world. The email should feel like it was written for this specific person, not templated.

@@ -525,15 +525,13 @@ export async function ensureGmailDrafts(env, now = new Date()) {
       let draftBody = String(e.draft_body || '').replace(/\r\n/g, '\n').replace(/\n?\n?Origami Consulting\n[\s\S]*?\n\nUnsubscribe:/i, '\n\nUnsubscribe:');
       draftBody = draftBody.replace(/\n*Unsubscribe:\s*.*$/i, '').trim();
       if (!draftBody.includes(address)) draftBody = `${draftBody}${draftBody ? '\n\n' : ''}${senderCompany}\n${address}`;
-      draftBody = `${draftBody.trim()}\n\nUnsubscribe: ${e.unsubscribe_url}`;
       const previous = await DB.prepare("SELECT thread_id,rfc_message_id FROM emails WHERE contact_id=? AND status='sent' ORDER BY sent_at DESC,id DESC LIMIT 1").bind(e.contact_id).first();
       const threadId = previous?.thread_id || '';
       const references = (await DB.prepare("SELECT rfc_message_id FROM emails WHERE contact_id=? AND status='sent' AND rfc_message_id<>'' ORDER BY sent_at,id LIMIT 4").bind(e.contact_id).all()).results.map((x) => x.rfc_message_id);
       const draftId = await createGmailDraft(env, DB, {
         fromName: senderName, fromEmail: connection.email_address, to: e.recipient_email,
         subject: e.subject, body: draftBody,
-        replyHeaders: { 'List-Unsubscribe': `<${e.unsubscribe_url}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-          ...(previous?.rfc_message_id ? { 'In-Reply-To': previous.rfc_message_id, References: references.join(' ') } : {}) }
+        replyHeaders: { ...(previous?.rfc_message_id ? { 'In-Reply-To': previous.rfc_message_id, References: references.join(' ') } : {}) }
       });
       await DB.prepare('UPDATE emails SET gmail_draft_id=?,updated_at=? WHERE id=?').bind(draftId, isoNow(now), e.id).run();
       created++;
@@ -793,13 +791,6 @@ export async function runGmailSendBatch(env, now = new Date()) {
       .bind(!email.recipient_email ? 'Add a prospect email address' : !String(email.mailing_address || '').trim() ? 'Add the physical mailing address in Settings' : 'Unsubscribe link missing', isoNow(now), email.id).run();
     return { status: 'paused_config', processed: 0, email_id: email.id };
   }
-  const unsubscribeToken = unsubscribeTokenFromUrl(email.unsubscribe_url, env.PUBLIC_APP_URL || '');
-  const unsubscribeOwner = unsubscribeToken ? await DB.prepare("SELECT contact_id FROM tracking WHERE token=? AND kind='unsubscribe'").bind(unsubscribeToken).first() : null;
-  if (!unsubscribeOwner || Number(unsubscribeOwner.contact_id) !== Number(email.contact_id)) {
-    const reason = 'Prospect-specific unsubscribe link is missing or does not belong to this contact';
-    await DB.prepare("UPDATE emails SET status='paused_config',last_error=?,updated_at=? WHERE id=?").bind(reason, isoNow(now), email.id).run();
-    return { status: 'paused_config', processed: 0, email_id: email.id, reason };
-  }
   const priorThreadCheck = await DB.prepare("SELECT id FROM emails WHERE contact_id=? AND status='sent' AND thread_id<>'' LIMIT 1").bind(email.contact_id).first();
   const subjectIssue = deceptiveSubjectReason(email.subject, !!priorThreadCheck);
   if (subjectIssue) {
@@ -827,14 +818,12 @@ export async function runGmailSendBatch(env, now = new Date()) {
   body = body.replace(/\n*Unsubscribe:\s*.*$/i, '').trim();
   const senderCompany = String(email.sender_company || 'Origami Consulting').trim() || 'Origami Consulting';
   if (!body.includes(address)) body = `${body}${body ? '\n\n' : ''}${senderCompany}\n${address}`;
-  body = `${body.trim()}\n\nUnsubscribe: ${draft.unsubscribe_url}`;
   const previous = await DB.prepare("SELECT thread_id,rfc_message_id FROM emails WHERE contact_id=? AND status='sent' ORDER BY sent_at DESC,id DESC LIMIT 1").bind(contact.id).first();
   const threadId = previous?.thread_id || '';
   const references = (await DB.prepare("SELECT rfc_message_id FROM emails WHERE contact_id=? AND status='sent' AND rfc_message_id<>'' ORDER BY sent_at,id LIMIT 4").bind(contact.id).all()).results.map((x) => x.rfc_message_id);
   const message = mimeMessage({ fromName: email.sender_name || email.sender_company || 'Origami Consulting', fromEmail: freshConnection.email_address,
     to: email.recipient_email, subject: draft.subject, body,
-    replyHeaders: { 'List-Unsubscribe': `<${draft.unsubscribe_url}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-      ...(previous?.rfc_message_id ? { 'In-Reply-To': previous.rfc_message_id, References: references.join(' ') } : {}) } });
+    replyHeaders: { ...(previous?.rfc_message_id ? { 'In-Reply-To': previous.rfc_message_id, References: references.join(' ') } : {}) } });
   const raw = base64Text(message);
   let sent = null; let finalError = ''; let finalStatus = 0;
   const priorAttempts = await DB.prepare('SELECT COALESCE(MAX(attempt_number),0) AS n FROM email_send_attempts WHERE email_id=?').bind(email.id).first();
