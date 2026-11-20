@@ -132,7 +132,7 @@ export async function finishGmailOAuth(env, DB, requestUrl) {
   if (!code) return redirectToSettings(origin, 'gmail=code_error');
   try {
     requiredOAuthConfig(env);
-    const redirectUri = `${origin}/api/gmail/oauth/callback`;
+    const redirectUri = `${env.PUBLIC_APP_URL || origin}/api/gmail/oauth/callback`;
     const verifier = await decrypt(env, row.verifier_enc);
     const body = new URLSearchParams({ client_id: env.GOOGLE_OAUTH_CLIENT_ID, client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
       code, code_verifier: verifier, grant_type: 'authorization_code', redirect_uri: redirectUri });

@@ -649,7 +649,7 @@ export async function onRequest(context) {
       return json({ enrichment, copywriting });
     }
     if (p0 === "gmail" && p1 === "oauth" && p2 === "start" && method === "GET") {
-      try { return Response.redirect(await beginGmailOAuth(env, db(), new URL(request.url).origin), 302); }
+      try { return Response.redirect(await beginGmailOAuth(env, db(), env.PUBLIC_APP_URL || new URL(request.url).origin), 302); }
       catch (e) { return json({ error: String(e?.message || e) }, 503); }
     }
     if (p0 === "gmail" && p1 === "status" && method === "GET") return json(await gmailStatus(db(), env));
