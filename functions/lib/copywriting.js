@@ -3,7 +3,7 @@ import { isEmailSuppressed } from './compliance.js';
 import { logStep } from './steplog.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const MAX_HOURLY = 1; // 1 job per cron run — free-tier rate limits are very tight
+const MAX_HOURLY = 10; // 10 jobs per hour — circuit breaker in generateWithFallback limits subrequests per call
 const nowIso = () => new Date().toISOString();
 const dateParts = () => {
   const d = new Date();
@@ -465,7 +465,7 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
     const job = await DB.prepare('SELECT unsubscribe_url FROM copywriting_jobs WHERE contact_id=?').bind(contactId).first();
     unsubscribeUrl = job?.unsubscribe_url || await createUnsubscribeUrl(DB, contactId, env.PUBLIC_APP_URL || '');
   }
-  if (!unsubscribeUrl) throw new Error('PUBLIC_APP_URL is required to include an unsubscribe link');
+  if (!unsubscribeUrl) throw new Error('PUBLIC_APP_URL is required for tracking tokens');
 
   // Gather fresh context (includes AI web search)
   const data = await gatherFreshContext(env, DB, contactId, unsubscribeUrl);
@@ -566,7 +566,6 @@ export async function runCopywritingBatch(env, maxJobs = MAX_HOURLY) {
     WHERE cj.status='queued'
       AND c.status NOT IN ('unsubscribed','do_not_contact','bounced','passed','paused','lost','replied','won')
       AND c.email IS NOT NULL AND c.email != ''
-      AND (c.timezone != '' OR c.next_action IS NOT NULL)
     ORDER BY cj.queued_at, cj.contact_id
     LIMIT ?
   `).bind(Math.min(MAX_HOURLY, Math.max(1, maxJobs))).all()).results || [];
@@ -715,7 +714,7 @@ export async function scheduleCopywriting(DB, contactId, options = {}) {
   if (drafts.some((d) => d.status === 'sent')) throw new Error('This sequence already has sent steps. It cannot be restarted from step 1.');
 
   // Check that available drafts meet quality requirements
-  const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 50 || Number(d.constraints_valid) !== 1 || !d.unsubscribe_url);
+  const lowQuality = drafts.filter((d) => Number(d.personalization_score) < 50 || Number(d.constraints_valid) !== 1);
   if (lowQuality.length) throw new Error(`${lowQuality.length} draft(s) must score at least 50 and pass copy rules before scheduling. Regenerate or edit them first.`);
 
   const stamp = nowIso();

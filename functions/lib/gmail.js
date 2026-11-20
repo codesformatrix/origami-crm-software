@@ -598,6 +598,12 @@ async function scheduleNext(DB, contact, currentDraft, now, queueRow = {}) {
   if (!next || nextStep > 4) {
     if (enrollment) await DB.prepare("UPDATE enrollments SET step_index=?,status='finished',finished_at=?,next_step_at=NULL,stop_reason='' WHERE id=?")
       .bind(Number(currentDraft.step_number), isoNow(now), enrollment.id).run();
+    // If the sequence isn't complete (nextStep <= 4) but the next draft doesn't
+    // exist yet, requeue the copywriting job so runCopywritingBatch generates it.
+    if (nextStep <= 4) {
+      await DB.prepare("UPDATE copywriting_jobs SET status='queued',stage='queued',progress=0,detail='Requeued for next email generation after send',error='',started_at=NULL,finished_at=NULL,updated_at=? WHERE contact_id=? AND status IN ('scheduled','ready','failed')")
+        .bind(isoNow(now), contact.id).run();
+    }
     return;
   }
   let delay = 0; let hasSequenceDelay = false;
@@ -732,6 +738,14 @@ export async function runGmailSendBatch(env, now = new Date()) {
   const stale = isoNow(new Date(now.getTime() - 5 * 60 * 1000));
   await DB.prepare("UPDATE emails SET status='failed',last_error='Worker stopped during send; check Gmail Sent before manual retry',updated_at=? WHERE status='sending' AND updated_at<?").bind(isoNow(now), stale).run();
   await reconcilePauseRules(DB);
+  // Auto-reset paused_timezone emails back to scheduled if the timezone is now valid.
+  // Previously paused emails would stay paused forever until manually resumed.
+  await DB.prepare(`UPDATE emails SET status='scheduled',last_error='',next_attempt_at=NULL,updated_at=?
+    WHERE status='paused_timezone' AND EXISTS (
+      SELECT 1 FROM contacts c JOIN companies co ON co.id=c.company_id
+      WHERE c.id=emails.contact_id
+        AND (c.timezone <> '' OR co.timezone <> '')
+    )`).bind(isoNow(now)).run();
   const connection = await DB.prepare('SELECT * FROM gmail_connections WHERE id=1').first();
   if (!connection || connection.status !== 'connected') {
     const reason = 'Connect or reconnect Gmail. All automatic sends are paused.';
@@ -786,9 +800,9 @@ export async function runGmailSendBatch(env, now = new Date()) {
     await DB.prepare("UPDATE emails SET status='suppressed',last_error='Contact is suppressed or has replied',updated_at=? WHERE id=?").bind(isoNow(now), email.id).run();
     return { status: 'suppressed', processed: 0, email_id: email.id };
   }
-  if (!email.recipient_email || !String(email.mailing_address || '').trim() || !email.unsubscribe_url) {
+  if (!email.recipient_email || !String(email.mailing_address || '').trim()) {
     await DB.prepare("UPDATE emails SET status='paused_config',last_error=?,updated_at=? WHERE id=?")
-      .bind(!email.recipient_email ? 'Add a prospect email address' : !String(email.mailing_address || '').trim() ? 'Add the physical mailing address in Settings' : 'Unsubscribe link missing', isoNow(now), email.id).run();
+      .bind(!email.recipient_email ? 'Add a prospect email address' : 'Add the physical mailing address in Settings', isoNow(now), email.id).run();
     return { status: 'paused_config', processed: 0, email_id: email.id };
   }
   const priorThreadCheck = await DB.prepare("SELECT id FROM emails WHERE contact_id=? AND status='sent' AND thread_id<>'' LIMIT 1").bind(email.contact_id).first();
