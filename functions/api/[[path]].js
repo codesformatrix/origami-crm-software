@@ -7,7 +7,7 @@ import { configuredProviders, generateWithFallback, checkProviderConnectivity } 
 import { enqueueProspect, manualLinkedInResearch, reserveQuota, runEnrichmentBatch, usageReport } from '../lib/enrichment.js';
 import { enqueueCopywritingJob, generateStepOnDemand, regenerateStep, runCopywritingBatch, scheduleCopywriting, scoreEditedDraft, refreshScheduledDrafts } from '../lib/copywriting.js';
 import { detectTimezone, enqueueTimezoneJob, runTimezoneBatch } from '../lib/timezone.js';
-import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken, runGmailSendBatch, ensureGmailDrafts } from '../lib/gmail.js';
+import { beginGmailOAuth, disconnectGmail, finishGmailOAuth, gmailStatus, markDraftSentManually, pauseContactSends, resumePausedSends, scheduleBusinessDays, applyReplyClassification, smtpConnect, smtpDisconnect, saveManualToken, runGmailSendBatch, ensureGmailDrafts, accessToken } from '../lib/gmail.js';
 import { isEmailSuppressed, rememberSuppression, anonymizeSuppression, normalizedDomain, safeDkimSelector, warmupCap } from '../lib/compliance.js';
 import { runOutreachOrchestrator } from '../lib/orchestrator.js';
 
@@ -652,7 +652,16 @@ export async function onRequest(context) {
       try { return Response.redirect(await beginGmailOAuth(env, db(), env.PUBLIC_APP_URL || new URL(request.url).origin), 302); }
       catch (e) { return json({ error: String(e?.message || e) }, 503); }
     }
-    if (p0 === "gmail" && p1 === "status" && method === "GET") return json(await gmailStatus(db(), env));
+    if (p0 === "gmail" && p1 === "status" && method === "GET") {
+      const status = await gmailStatus(db(), env);
+      try {
+        await accessToken(env, db(), true);
+        status.token_refresh = 'ok';
+      } catch (e) {
+        status.token_refresh = 'failed: ' + String(e?.message || e).slice(0, 300);
+      }
+      return json(status);
+    }
     if (p0 === "gmail" && p1 === "log" && method === "GET") {
       const rows = (await db().prepare(`SELECT e.*,c.name AS contact_name,c.email AS recipient_email,d.step_number,d.subject,
         (SELECT COUNT(*) FROM email_send_attempts a WHERE a.email_id=e.id) AS attempts

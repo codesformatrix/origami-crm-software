@@ -162,7 +162,7 @@ export async function finishGmailOAuth(env, DB, requestUrl) {
     return redirectToSettings(origin, 'gmail=error');
   }
 }
-async function accessToken(env, DB, forceRefresh = false, manualRefreshToken = '') {
+export async function accessToken(env, DB, forceRefresh = false, manualRefreshToken = '') {
   const connection = await DB.prepare('SELECT * FROM gmail_connections WHERE id=1').first();
   if (!connection || connection.status !== 'connected') throw new GmailAuthError('Connect or reconnect Gmail before sending scheduled emails');
   const expiresAt = Date.parse(connection.access_expires_at || '');
@@ -170,17 +170,49 @@ async function accessToken(env, DB, forceRefresh = false, manualRefreshToken = '
   try {
     requiredOAuthConfig(env);
     const refreshToken = await decrypt(env, connection.refresh_token_enc);
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ client_id: env.GOOGLE_OAUTH_CLIENT_ID, client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET, refresh_token: refreshToken, grant_type: 'refresh_token' }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.access_token) throw new GmailAuthError(data.error_description || data.error || 'Gmail refresh token expired or revoked');
-    await DB.prepare('UPDATE gmail_connections SET access_token_enc=?,access_expires_at=?,updated_at=?,last_error=? WHERE id=1')
-      .bind(await encrypt(env, data.access_token), isoNow(addMs(new Date(), Math.max(60, Number(data.expires_in) || 3600) * 1000)), isoNow(), '').run();
-    return data.access_token;
+    // Retry the refresh up to 3 times with backoff before disconnecting.
+    // Transient network errors (Worker subrequest limits, temporary outages)
+    // should not force a reconnect — only a persistent invalid_grant does.
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: env.GOOGLE_OAUTH_CLIENT_ID, client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET, refresh_token: refreshToken, grant_type: 'refresh_token' }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.access_token) {
+          const err = new GmailAuthError(data.error_description || data.error || `Gmail refresh failed (HTTP ${response.status})`);
+          // invalid_grant means the refresh token is truly invalid — disconnect immediately
+          if (/invalid_grant|unauthorized|revoked/i.test(String(err.message))) {
+            await requireReconnect(env, DB, err.message);
+            throw err;
+          }
+          // Other HTTP errors (429, 500, etc.) — retry
+          lastError = err;
+          if (attempt < 2) { await sleep(2000 * (attempt + 1)); continue; }
+          throw err;
+        }
+        await DB.prepare('UPDATE gmail_connections SET access_token_enc=?,access_expires_at=?,updated_at=?,last_error=? WHERE id=1')
+          .bind(await encrypt(env, data.access_token), isoNow(addMs(new Date(), Math.max(60, Number(data.expires_in) || 3600) * 1000)), isoNow(), '').run();
+        return data.access_token;
+      } catch (e) {
+        if (e instanceof GmailAuthError && /invalid_grant|unauthorized|revoked/i.test(String(e.message))) {
+          await requireReconnect(env, DB, e.message);
+          throw e;
+        }
+        lastError = e;
+        if (attempt < 2) { await sleep(2000 * (attempt + 1)); continue; }
+      }
+    }
+    if (lastError) {
+      // Network-level failure after 3 retries — don't disconnect, just throw.
+      // The connection is still valid; the next cron run will try again.
+      throw new GmailAuthError(`Gmail token refresh failed after retries: ${String(lastError?.message || lastError).slice(0, 200)}`);
+    }
   } catch (error) {
-    if (error instanceof GmailAuthError || /invalid_grant|unauthorized|revoked|expired|GMAIL_TOKEN_ENCRYPTION_KEY|GOOGLE_OAUTH_CLIENT/i.test(String(error?.message || error))) {
+    if (error instanceof GmailAuthError && /GMAIL_TOKEN_ENCRYPTION_KEY|GOOGLE_OAUTH_CLIENT/i.test(String(error?.message || error))) {
       await requireReconnect(env, DB, String(error?.message || error));
       throw new GmailAuthError(String(error?.message || 'Reconnect Gmail'));
     }
@@ -505,7 +537,7 @@ export async function ensureGmailDrafts(env, now = new Date()) {
   let token = null;
   if (connection.connection_type !== 'smtp') {
     try { token = await accessToken(env, DB); }
-    catch { return { status: 'skipped', created: 0, reason: 'Could not get Gmail token' }; }
+    catch { return { status: 'skipped', created: 0, reason: 'Token refresh failed — will retry next tick' }; }
   }
   const candidates = (await DB.prepare(`SELECT e.id,e.email_draft_id,d.subject,d.body AS draft_body,d.step_number,d.unsubscribe_url,d.contact_id,
       c.name AS contact_name,c.email AS recipient_email,c.status AS contact_status,c.cadence,c.timezone AS prospect_timezone,
@@ -755,7 +787,13 @@ export async function runGmailSendBatch(env, now = new Date()) {
   let token = null;
   if (connection.connection_type !== 'smtp') {
     try { token = await accessToken(env, DB); }
-    catch { return { status: 'reconnect_required', processed: 0 }; }
+    catch (e) {
+      // If the connection is still marked connected, this is a transient error
+      // (token refresh failed after retries). Don't force a reconnect — try again next tick.
+      const conn = await DB.prepare("SELECT status FROM gmail_connections WHERE id=1").first();
+      if (conn?.status === 'connected') return { status: 'token_refresh_failed', processed: 0, detail: String(e?.message || e).slice(0, 200) };
+      return { status: 'reconnect_required', processed: 0 };
+    }
   }
   const freshConnection = await DB.prepare('SELECT * FROM gmail_connections WHERE id=1').first();
   const sync = token ? await syncReplies(env, DB, token, freshConnection, now) : { ok: true, replies: 0 };
