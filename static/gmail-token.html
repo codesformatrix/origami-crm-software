@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Get Gmail Refresh Token</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #222; }
+  h1 { font-size: 22px; }
+  .panel { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 16px 0; }
+  .err { color: #c00; background: #fee; padding: 12px; border-radius: 6px; }
+  .ok { color: #080; background: #efe; padding: 12px; border-radius: 6px; }
+  .token { font-family: monospace; font-size: 13px; word-break: break-all; background: #f5f5f5; padding: 12px; border-radius: 6px; }
+  button { background: #4285f4; color: #fff; border: none; border-radius: 6px; padding: 12px 24px; font-size: 16px; cursor: pointer; }
+  button:hover { background: #3367d6; }
+  input { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+  label { font-weight: 600; font-size: 14px; }
+  .muted { color: #888; font-size: 14px; }
+  a { color: #4285f4; }
+  .url-box { font-family: monospace; font-size: 13px; background: #f0f0ff; padding: 10px; border-radius: 6px; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<h1>Gmail Refresh Token Helper</h1>
+
+<div id="status"></div>
+
+<div id="setup" class="panel">
+  <p class="muted">This page connects to your Google account and generates a refresh token for the CRM.
+  You'll paste it into the CRM Settings later. Get your Client ID and Secret from
+  <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console → Credentials → Web application</a>.</p>
+
+  <label>Client ID</label>
+  <input id="clientId" placeholder="xxxx.apps.googleusercontent.com">
+
+  <label>Client Secret</label>
+  <input id="clientSecret" type="password" placeholder="Google OAuth Client Secret">
+
+  <label>Your Gmail email</label>
+  <input id="email" placeholder="you@gmail.com">
+
+  <p style="margin-top:16px">
+    <button id="btn1">Connect Gmail</button>
+  </p>
+
+  <div id="step2" style="display:none;margin-top:16px">
+    <p class="muted"><b>Step 1:</b> Register this exact URL as an authorized redirect in Google Cloud Console:</p>
+    <div class="url-box" id="redirectUrl"></div>
+    <p style="margin-top:8px"><a href="https://console.cloud.google.com/apis/credentials" target="_blank">Open Google Cloud Console →</a></p>
+    <p style="margin-top:16px"><button id="btn2">I've added the URL — Connect Gmail</button></p>
+  </div>
+</div>
+
+<div id="result" class="panel" style="display:none">
+  <h3>✅ Success!</h3>
+  <p>Copy the <b>refresh_token</b> below and paste it into the CRM:</p>
+  <p><b>Settings → Gmail → "Or paste an OAuth refresh token"</b></p>
+  <label>Refresh Token (ya29...)</label>
+  <div class="token" id="refreshToken"></div>
+  <p style="margin-top:12px"><button id="copyBtn">Copy Refresh Token</button></p>
+  <p id="copied" style="display:none;color:#080" class="ok">Copied! Paste it into the CRM now.</p>
+</div>
+
+<div class="panel">
+  <p class="muted">
+    <b>Before you start:</b> Make sure you've added yourself as a test user in Google Cloud Console:
+    <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank">OAuth consent screen → Test users → + Add users → your email</a>
+  </p>
+</div>
+
+<script>
+const SCOPES = [
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.metadata',
+];
+
+function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function showError(msg) {
+  document.getElementById('status').innerHTML = '<div class="err">' + esc(msg) + '</div>';
+}
+
+// Check for callback from Google (code in URL)
+const params = new URLSearchParams(window.location.search);
+const code = params.get('code');
+const error = params.get('error');
+
+if (code) {
+  exchangeCode(code);
+} else if (error) {
+  showError('Google returned error: ' + error + ' — ' + (params.get('error_description') || ''));
+}
+
+// Button 1: Show redirect URL
+document.getElementById('btn1').onclick = function() {
+  var clientId = document.getElementById('clientId').value.trim();
+  var clientSecret = document.getElementById('clientSecret').value.trim();
+  var email = document.getElementById('email').value.trim();
+
+  if (!clientId || !clientSecret) { showError('Please enter Client ID and Client Secret'); return; }
+  if (!email) { showError('Please enter your Gmail email address'); return; }
+
+  // Save to localStorage for after redirect
+  localStorage.setItem('gt_client_id', clientId);
+  localStorage.setItem('gt_client_secret', clientSecret);
+  localStorage.setItem('gt_email', email);
+  localStorage.setItem('gt_redirect', window.location.origin + window.location.pathname);
+
+  var redirectUrl = window.location.origin + window.location.pathname;
+  document.getElementById('redirectUrl').textContent = redirectUrl;
+  document.getElementById('step2').style.display = 'block';
+  document.getElementById('status').innerHTML = '<p>Register the URL above in Google Cloud Console, then click the button below.</p>';
+};
+
+// Button 2: Redirect to Google
+document.getElementById('btn2').onclick = function() {
+  var clientId = localStorage.getItem('gt_client_id');
+  var email = localStorage.getItem('gt_email');
+  var redirectUrl = localStorage.getItem('gt_redirect');
+
+  if (!clientId) { showError('Please go back and fill in the form first'); return; }
+
+  var authUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
+  var u = new URL(authUrl);
+  u.searchParams.set('client_id', clientId);
+  u.searchParams.set('redirect_uri', redirectUrl);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('scope', SCOPES.join(' '));
+  u.searchParams.set('access_type', 'offline');
+  u.searchParams.set('prompt', 'consent');
+  u.searchParams.set('state', email);
+
+  document.getElementById('status').innerHTML = '<p>Redirecting to Google consent screen…</p>';
+  window.location.href = u.toString();
+};
+
+// Exchange code for tokens
+async function exchangeCode(code) {
+  var statusEl = document.getElementById('status');
+  statusEl.innerHTML = '<p>Exchanging authorization code for tokens…</p>';
+
+  var clientId = localStorage.getItem('gt_client_id');
+  var clientSecret = localStorage.getItem('gt_client_secret');
+  var redirectUrl = localStorage.getItem('gt_redirect');
+
+  if (!clientId || !clientSecret) {
+    showError('Credentials not found. Go back, fill in the form, and click Connect Gmail again.');
+    return;
+  }
+
+  try {
+    var resp = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code: code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUrl,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    var tokens = await resp.json();
+    if (tokens.error) {
+      showError('Token exchange failed: ' + (tokens.error_description || tokens.error));
+      return;
+    }
+
+    document.getElementById('refreshToken').textContent = tokens.refresh_token;
+    document.getElementById('setup').style.display = 'none';
+    document.getElementById('status').style.display = 'none';
+    document.getElementById('result').style.display = 'block';
+  } catch (e) {
+    showError('Request failed: ' + e.message);
+  }
+}
+
+// Copy button
+document.getElementById('copyBtn').onclick = function() {
+  var text = document.getElementById('refreshToken').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    document.getElementById('copied').style.display = 'block';
+  });
+};
+</script>
+</body>
+</html>
