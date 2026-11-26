@@ -19,11 +19,11 @@ function providers(env) {
       ],
     });
   }
-  // Groq: try llama-3.3-70b-versatile first, fall back to llama-3.1-8b-instant if 404
+  // Groq: use currently available models (mixtral deprecated)
   if (env.GROQ_API_KEY) {
     out.push({
       name: 'groq', key: env.GROQ_API_KEY,
-      models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
+      models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'qwen/qwen3-32b'],
     });
   }
   if (env.GEMINI_API_KEY) {
@@ -113,7 +113,7 @@ export async function generateWithFallback(env, messages, options = {}) {
   // multiple jobs can run per cron tick without hitting the limit. Stop the
   // entire fallback chain immediately on a subrequest error — trying more
   // providers will only make the problem worse.
-  const MAX_SUBREQUESTS = 3;
+  const MAX_SUBREQUESTS = 5;
   let subrequests = 0;
   let hitSubrequestLimit = false;
 
