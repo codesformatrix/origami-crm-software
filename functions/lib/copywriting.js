@@ -1,7 +1,7 @@
 import { generateWithFallback } from './llm.js';
 import { isEmailSuppressed } from './compliance.js';
 import { logStep } from './steplog.js';
-import { isVerifiedEvidence, evidenceLabel, mapSourceApiToEvidence, EVIDENCE_DISCIPLINE_RULE, loadRecentVerifiedNotes } from './evidence.js';
+import { EVIDENCE, isVerifiedEvidence, evidenceLabel, mapSourceApiToEvidence, strongestEvidence, EVIDENCE_DISCIPLINE_RULE, loadRecentVerifiedNotes } from './evidence.js';
 import { llmCooldownStore, llmAttemptRecorder } from './usage.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -139,7 +139,7 @@ async function scoreDrafts(env, DB, drafts, context, options = {}) {
 // Gathers ALL available data for a prospect at generation time:
 // contact fields, company fields, research notes, sent emails, LinkedIn posts,
 // and AI web search for latest news about the prospect and company.
-async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
+export async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
   const contact = await DB.prepare('SELECT * FROM contacts WHERE id=?').bind(contactId).first();
   if (!contact) throw new Error('Prospect not found');
   const company = await DB.prepare('SELECT * FROM companies WHERE id=?').bind(contact.company_id).first();
@@ -168,14 +168,20 @@ async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
   const reusable = await loadRecentVerifiedNotes(DB, contactId, reuseHours);
   let searchResults;
   if (reusable.length) {
+    // Reused notes are verified evidence by construction (loadRecentVerifiedNotes
+    // only returns search_api / website_scrape / user_provided).
+    const reusedTypes = [...new Set(reusable.map((n) => n.source_type))];
     searchResults = {
       text: reusable.slice(0, 3).map((n) => `[${n.source_type}] ${n.summary || ''}`).filter(Boolean).join('\n\n'),
       urls: reusable.map((n) => n.source_url || '').filter(Boolean),
       facts: [],
+      evidence: strongestEvidence(...reusedTypes),
       note: `Reused ${reusable.length} recent verified research note(s); skipped repeated search`,
     };
   } else {
+    // AI web search is LLM-generated output — unverified until checked.
     searchResults = await aiWebSearch(env, DB, contact, company || {});
+    searchResults.evidence = EVIDENCE.LLM_INFERENCE;
   }
 
   // Build research object from latest note, or synthesize from company fields
@@ -204,10 +210,18 @@ async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
     };
   }
 
-  // Combine LinkedIn posts and search results into fresh insights
-  const linkedinText = linkedinPosts.map((p) => p.text || p.content || '').filter(Boolean).join('\n');
-  const searchText = searchResults.text;
+  // Combine LinkedIn posts and search results into fresh insights. Every
+  // section is labelled with its evidence type so unverified LLM output can
+  // never be read as verified news downstream.
+  const linkedinText = linkedinPosts.length
+    ? `[${EVIDENCE.USER_PROVIDED}] ${linkedinPosts.map((p) => p.text || p.content || '').filter(Boolean).join('\n')}`
+    : '';
+  const searchEvidence = searchResults.evidence || EVIDENCE.LLM_INFERENCE;
+  const searchText = searchResults.text
+    ? `[${searchEvidence}${searchEvidence === EVIDENCE.LLM_INFERENCE ? ' — unverified AI search output' : ''}] ${searchResults.text}`
+    : '';
   const freshContext = [linkedinText, searchText].filter(Boolean).join('\n\n');
+  const freshContextEvidence = searchEvidence;
 
   return {
     contact,
@@ -218,6 +232,7 @@ async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
     linkedinPosts,
     replies,
     freshContext,
+    freshContextEvidence,
     searchResults,
     icp: {
       authority: profile.icp_authority || '',
@@ -230,7 +245,7 @@ async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
       min_size: profile.icp_company_size_min || '10',
       max_size: profile.icp_company_size_max || '500',
       technology_fit: profile.icp_technology_fit || '',
-    }, unsubscribeUrl, freshContext, sentDrafts, replies),
+    }, unsubscribeUrl, freshContext, sentDrafts, replies, freshContextEvidence),
   };
 }
 
@@ -269,7 +284,7 @@ async function aiWebSearch(env, DB, contact, company) {
   }
 }
 
-function buildUserContext(contact, company, research, sender, icp, unsubscribeUrl, freshContext, sentDrafts, replies) {
+function buildUserContext(contact, company, research, sender, icp, unsubscribeUrl, freshContext, sentDrafts, replies, freshContextEvidence = EVIDENCE.LLM_INFERENCE) {
   const pain = parseList(research.pain_points);
   const talking = parseList(research.talking_points);
   const offerICP = contact.title ? `${contact.title} leaders at ${company.name}` : `technology leaders at ${company.name}`;
@@ -300,6 +315,7 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
       evidence_type: research.evidence_type || '',
       evidence_verified: research.evidence_verified !== false,
       evidence_label: evidenceLabel(research.evidence_type),
+      fresh_context_evidence: freshContextEvidence || EVIDENCE.LLM_INFERENCE,
     },
     previous_emails: sentDrafts.map((d) => ({ step_number: Number(d.step_number), subject: d.subject, body: d.body })),
     previous_replies: replies.map((r) => ({ classification: r.classification || '', body: r.body || r.content || '', received_at: r.received_at || '' })),
@@ -316,7 +332,7 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
       signature: 'Use only the supplied sender name and company if signing. The mailing address is context only. Do not invent facts or claims.',
       location: 'If the prospect location is available, write with local context awareness: write as someone who knows their market and environment, and reference the location naturally when relevant. Never mention the timezone mechanically and never invent local facts.',
       unsubscribe: 'Do not include any links, unsubscribe footers, or URLs in the email body.',
-      fresh_context: 'Use the fresh_context field for the most recent information about the prospect and company. Incorporate recent news, developments, or context naturally into the email hook — only when that information is backed by verified evidence.',
+      fresh_context: 'The fresh_context field is labelled with its evidence type ([search_api], [website_scrape], [user_provided] or [llm_inference]). Use it for the most recent information about the prospect and company, and incorporate recent news, developments, or context naturally into the email hook — but only treat it as fact when its label is a verified type. Content labelled [llm_inference] is unverified AI output: hedge it explicitly or omit it.',
       evidence_discipline: EVIDENCE_DISCIPLINE_RULE,
       icp: { authority: icp.authority || '', company_size: `${icp.min_size || '10'} to ${icp.max_size || '500'}`, technology_services_fit: icp.technology_fit || '' },
     },
@@ -686,13 +702,15 @@ async function loadContext(DB, contactId, unsubscribeUrl) {
   }
   const linkedinText = linkedinPosts.map((p) => p.text || p.content || '').filter(Boolean).join('\n');
   const freshContext = linkedinText;
+  // User-pasted LinkedIn content is user-provided evidence, not web research.
+  const freshContextEvidence = linkedinText ? EVIDENCE.USER_PROVIDED : EVIDENCE.LLM_INFERENCE;
   return {
     contact, company: company || {}, research, profile, sentDrafts, linkedinPosts, replies, freshContext,
     searchResults: { text: '' },
     icp: { authority: profile.icp_authority || '', min_size: profile.icp_company_size_min || '10', max_size: profile.icp_company_size_max || '500', fit: profile.icp_technology_fit || '' },
     context: buildUserContext(contact, company || {}, research, profile, {
       authority: profile.icp_authority || '', min_size: profile.icp_company_size_min || '10', max_size: profile.icp_company_size_max || '500', technology_fit: profile.icp_technology_fit || ''
-    }, unsubscribeUrl, freshContext, sentDrafts, replies),
+    }, unsubscribeUrl, freshContext, sentDrafts, replies, freshContextEvidence),
   };
 }
 
