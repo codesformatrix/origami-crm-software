@@ -364,14 +364,14 @@ export async function onRequest(context) {
       // no draft yet: research (real search API), write, score, retry, schedule.
       try { results.orchestrator = await runOutreachOrchestrator(runEnv, db(), now); }
       catch (e) { results.orchestrator_error = String(e?.message || e).slice(0, 200); }
-      // Step 3: Pre-send refresh: regenerate scheduled emails with fresh AI web search context
-      try { results.refresh = await refreshScheduledDrafts(runEnv, db(), now, 2, 12); }
+      // Step 3: Pre-send refresh: regenerate scheduled emails with fresh AI web search context (limited to 1 per tick to stay under subrequest limits)
+      try { results.refresh = await refreshScheduledDrafts(runEnv, db(), now, 1, 1); }
       catch (e) { results.refresh_error = String(e?.message || e).slice(0, 200); }
       // Step 4: Enrichment batch: process queued enrichment jobs
       try { results.enrichment = await runEnrichmentBatch(runEnv, 10); }
       catch (e) { results.enrichment_error = String(e?.message || e).slice(0, 200); }
-      // Step 5: Copywriting batch: generate one email per job, limited to 3 per tick to stay under subrequest limits
-      try { results.copywriting = await runCopywritingBatch(runEnv, 3); }
+      // Step 5: Copywriting batch: generate one email per job, limited to 1 per tick to stay under subrequest limits
+      try { results.copywriting = await runCopywritingBatch(runEnv, 1); }
       catch (e) { results.copywriting_error = String(e?.message || e).slice(0, 200); }
       // Step 6: Timezone batch: detect timezones for contacts that still need them
       try { results.timezone = await runTimezoneBatch(runEnv, 10); }

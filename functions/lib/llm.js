@@ -4,39 +4,34 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function providers(env) {
   const out = [];
-  // APInex: primary provider — OpenAI-compatible gateway with free models, 1M context
-  if (env.APINEX_API_KEY) {
-    out.push({
-      name: 'apinex', key: env.APINEX_API_KEY,
-      baseUrl: 'https://api.apinex.bond/v1',
-      models: [
-        'free/gpt-6-luna',
-        'free/qwen-3.8-max',
-        'free/glm-5.3-flash',
-        'free/gemini-4-hydrogen',
-        'free/deepseek-v4.1-flash',
-        'free/kimi-k3',
-      ],
-    });
-  }
-  // Groq: use currently available models (mixtral deprecated)
+  // Groq: FIRST — openai/gpt-oss-20b confirmed working (429 = rate limited, not 404)
+  // The llama-3.x model names return 404 on this account, so use only gpt-oss-20b
   if (env.GROQ_API_KEY) {
     out.push({
       name: 'groq', key: env.GROQ_API_KEY,
-      models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'qwen/qwen3-32b'],
+      models: ['openai/gpt-oss-20b', 'qwen/qwen3-32b'],
     });
   }
+  // Gemini: SECOND — stable flash models
   if (env.GEMINI_API_KEY) {
     out.push({
       name: 'gemini', key: env.GEMINI_API_KEY,
       models: [env.GEMINI_MODEL || 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
     });
   }
+  // OpenRouter: THIRD — known-good free models
   if (env.OPENROUTER_API_KEY) {
-    // Always use known-good free models — the env var may contain an invalid model name
     out.push({
       name: 'openrouter', key: env.OPENROUTER_API_KEY,
       models: ['google/gemma-4-31b-it:free', 'google/gemma-4-26b-a4b-it:free'],
+    });
+  }
+  // APInex: LAST — free quota exhausted (402), only tried if all others fail
+  if (env.APINEX_API_KEY) {
+    out.push({
+      name: 'apinex', key: env.APINEX_API_KEY,
+      baseUrl: 'https://api.apinex.bond/v1',
+      models: ['free/gpt-6-luna', 'free/qwen-3.8-max'],
     });
   }
   return out;
@@ -109,11 +104,11 @@ export async function generateWithFallback(env, messages, options = {}) {
   const maxTokens = Math.max(1, Math.min(Number(options.maxTokens) || 500, 2000));
   const temperature = Math.max(0, Math.min(Number(options.temperature ?? 0.2), 1));
   const failures = [];
-  // Cloudflare Workers limits subrequests per invocation. Keep this low so
-  // multiple jobs can run per cron tick without hitting the limit. Stop the
-  // entire fallback chain immediately on a subrequest error — trying more
-  // providers will only make the problem worse.
-  const MAX_SUBREQUESTS = 5;
+  // Cloudflare Pages Functions have a fixed subrequest limit that cannot be
+  // reliably raised via wrangler.jsonc. Keep MAX_SUBREQUESTS very low — one
+  // attempt per provider (4 providers = 4 subrequests max). No retries on
+  // 429 — just move to the next provider. Stop immediately on subrequest errors.
+  const MAX_SUBREQUESTS = 4;
   let subrequests = 0;
   let hitSubrequestLimit = false;
 
@@ -136,57 +131,57 @@ export async function generateWithFallback(env, messages, options = {}) {
         if (!allowed) { failures.push(`${provider.name}: configured quota cap reached`); providerSkipped = true; break; }
       }
       const req = buildRequest(provider, model, messages, maxTokens, temperature);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (subrequests >= MAX_SUBREQUESTS) { hitSubrequestLimit = true; break; }
-        subrequests++;
-        let response;
-        try {
-          response = await fetch(req.url, {
-            method: 'POST', headers: req.headers, body: JSON.stringify(req.body),
-          });
-        } catch (e) {
-          const msg = String(e?.message || e);
-          // Cloudflare throws "Too many subrequests" as a caught fetch error.
-          // Stop immediately — trying more providers will only make it worse.
-          if (/subrequest/i.test(msg)) {
-            failures.push(`${provider.name} (${model}): ${msg.slice(0, 200)}`);
-            hitSubrequestLimit = true;
-          } else {
-            failures.push(`${provider.name} (${model}): ${e?.name || 'Error'}: ${msg.slice(0, 200)}`);
-          }
-          break;
+      // Single attempt per model — no retries. Retries waste subrequests and
+      // the next provider in the chain is likely to work.
+      if (subrequests >= MAX_SUBREQUESTS) { hitSubrequestLimit = true; break; }
+      subrequests++;
+      let response;
+      try {
+        response = await fetch(req.url, {
+          method: 'POST', headers: req.headers, body: JSON.stringify(req.body),
+        });
+      } catch (e) {
+        const msg = String(e?.message || e);
+        // Cloudflare throws "Too many subrequests" as a caught fetch error.
+        // Stop immediately — trying more providers will only make it worse.
+        if (/subrequest/i.test(msg)) {
+          failures.push(`${provider.name} (${model}): ${msg.slice(0, 200)}`);
+          hitSubrequestLimit = true;
+        } else {
+          failures.push(`${provider.name} (${model}): ${e?.name || 'Error'}: ${msg.slice(0, 200)}`);
         }
-        // 404 means model not found — try next model in the list
-        if (response.status === 404) {
-          failures.push(`${provider.name} (${model}): HTTP 404 model not found`);
-          break;
-        }
-        // 402 (payment required) or 403 (forbidden) — provider-level failure,
-        // skip all remaining models for this provider
-        if (response.status === 402 || response.status === 403 || response.status === 401) {
-          failures.push(`${provider.name} (${model}): HTTP ${response.status} — skipping remaining ${provider.models.length - 1} models for this provider`);
-          providerSkipped = true;
-          break;
-        }
-        if (response.status === 429 && attempt < 1) {
-          await sleep(10000 * (2 ** attempt));
-          continue;
-        }
-        if (!response.ok) {
-          failures.push(`${provider.name} (${model}): HTTP ${response.status}`);
-          break;
-        }
-        let data;
-        try { data = await response.json(); } catch {
-          failures.push(`${provider.name} (${model}): invalid response`);
-          break;
-        }
-        const text = req.parse(data);
-        if (text) return { text, provider: provider.name, model };
-        failures.push(`${provider.name} (${model}): empty response`);
         break;
       }
-      if (hitSubrequestLimit) break;
+      // 404 means model not found — try next model in the list
+      if (response.status === 404) {
+        failures.push(`${provider.name} (${model}): HTTP 404 model not found`);
+        break;
+      }
+      // 402 (payment required) or 403 (forbidden) — provider-level failure,
+      // skip all remaining models for this provider
+      if (response.status === 402 || response.status === 403 || response.status === 401) {
+        failures.push(`${provider.name} (${model}): HTTP ${response.status} — skipping remaining ${provider.models.length - 1} models for this provider`);
+        providerSkipped = true;
+        break;
+      }
+      // 429 rate limited — skip retry, try next provider in chain
+      if (response.status === 429) {
+        failures.push(`${provider.name} (${model}): HTTP 429 rate limited`);
+        break;
+      }
+      if (!response.ok) {
+        failures.push(`${provider.name} (${model}): HTTP ${response.status}`);
+        break;
+      }
+      let data;
+      try { data = await response.json(); } catch {
+        failures.push(`${provider.name} (${model}): invalid response`);
+        break;
+      }
+      const text = req.parse(data);
+      if (text) return { text, provider: provider.name, model };
+      failures.push(`${provider.name} (${model}): empty response`);
+      break;
     }
     if (hitSubrequestLimit) break;
   }
