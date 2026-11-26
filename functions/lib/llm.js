@@ -109,17 +109,24 @@ export async function generateWithFallback(env, messages, options = {}) {
   const maxTokens = Math.max(1, Math.min(Number(options.maxTokens) || 500, 2000));
   const temperature = Math.max(0, Math.min(Number(options.temperature ?? 0.2), 1));
   const failures = [];
-  // Cloudflare Workers limits subrequests per invocation. Cap total fetch attempts
-  // to stay well under the limit — skip remaining models for a provider once we
-  // hit a non-retryable error (402, 403, 401) instead of burning subrequests.
-  const MAX_SUBREQUESTS = 8;
+  // Cloudflare Workers limits subrequests per invocation. Keep this low so
+  // multiple jobs can run per cron tick without hitting the limit. Stop the
+  // entire fallback chain immediately on a subrequest error — trying more
+  // providers will only make the problem worse.
+  const MAX_SUBREQUESTS = 3;
   let subrequests = 0;
+  let hitSubrequestLimit = false;
 
   for (const provider of chain) {
+    if (hitSubrequestLimit) {
+      failures.push(`${provider.name}: skipped — subrequest limit already reached`);
+      break;
+    }
     let providerSkipped = false;
     for (const model of provider.models) {
       if (subrequests >= MAX_SUBREQUESTS) {
         failures.push(`${provider.name}: subrequest limit reached, skipping remaining models`);
+        hitSubrequestLimit = true;
         break;
       }
       if (providerSkipped) break;
@@ -129,8 +136,8 @@ export async function generateWithFallback(env, messages, options = {}) {
         if (!allowed) { failures.push(`${provider.name}: configured quota cap reached`); providerSkipped = true; break; }
       }
       const req = buildRequest(provider, model, messages, maxTokens, temperature);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (subrequests >= MAX_SUBREQUESTS) break;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (subrequests >= MAX_SUBREQUESTS) { hitSubrequestLimit = true; break; }
         subrequests++;
         let response;
         try {
@@ -138,7 +145,15 @@ export async function generateWithFallback(env, messages, options = {}) {
             method: 'POST', headers: req.headers, body: JSON.stringify(req.body),
           });
         } catch (e) {
-          failures.push(`${provider.name} (${model}): ${e?.name || 'Error'}: ${String(e?.message || e).slice(0, 200)}`);
+          const msg = String(e?.message || e);
+          // Cloudflare throws "Too many subrequests" as a caught fetch error.
+          // Stop immediately — trying more providers will only make it worse.
+          if (/subrequest/i.test(msg)) {
+            failures.push(`${provider.name} (${model}): ${msg.slice(0, 200)}`);
+            hitSubrequestLimit = true;
+          } else {
+            failures.push(`${provider.name} (${model}): ${e?.name || 'Error'}: ${msg.slice(0, 200)}`);
+          }
           break;
         }
         // 404 means model not found — try next model in the list
@@ -153,7 +168,7 @@ export async function generateWithFallback(env, messages, options = {}) {
           providerSkipped = true;
           break;
         }
-        if (response.status === 429 && attempt < 2) {
+        if (response.status === 429 && attempt < 1) {
           await sleep(10000 * (2 ** attempt));
           continue;
         }
@@ -171,7 +186,9 @@ export async function generateWithFallback(env, messages, options = {}) {
         failures.push(`${provider.name} (${model}): empty response`);
         break;
       }
+      if (hitSubrequestLimit) break;
     }
+    if (hitSubrequestLimit) break;
   }
   const error = new Error('All configured LLM providers failed: ' + failures.join('; '));
   error.code = 'ALL_PROVIDERS_FAILED';

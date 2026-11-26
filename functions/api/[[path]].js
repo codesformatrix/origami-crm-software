@@ -370,8 +370,8 @@ export async function onRequest(context) {
       // Step 4: Enrichment batch: process queued enrichment jobs
       try { results.enrichment = await runEnrichmentBatch(runEnv, 10); }
       catch (e) { results.enrichment_error = String(e?.message || e).slice(0, 200); }
-      // Step 5: Copywriting batch: generate all 4 email steps + auto-schedule
-      try { results.copywriting = await runCopywritingBatch(runEnv, 10); }
+      // Step 5: Copywriting batch: generate one email per job, limited to 3 per tick to stay under subrequest limits
+      try { results.copywriting = await runCopywritingBatch(runEnv, 3); }
       catch (e) { results.copywriting_error = String(e?.message || e).slice(0, 200); }
       // Step 6: Timezone batch: detect timezones for contacts that still need them
       try { results.timezone = await runTimezoneBatch(runEnv, 10); }

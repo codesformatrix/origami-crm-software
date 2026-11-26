@@ -15,8 +15,8 @@
   ],
   "limits": {
     "cpu_ms": 300000,
-    "subrequests": 100,
-    "outboundRequests": 1000,
-    "outboundServiceFetches": 100
+    "subrequests": 1000,
+    "outboundRequests": 10000,
+    "outboundServiceFetches": 1000
   }
 }
