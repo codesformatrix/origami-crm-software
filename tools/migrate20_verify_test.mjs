@@ -35,6 +35,9 @@ const execFile = (db, file) => db.exec(fs.readFileSync(path.join(root, file), 'u
 // not applicable on top of the current schema.sql and is exercised
 // separately below. Production D1 itself is not reachable from this sandbox.)
 const db = new DatabaseSync(':memory:');
+// Explicitly enable SQLite foreign-key enforcement so FK constraints are
+// actually exercised (node:sqlite does not enable them by default).
+db.exec('PRAGMA foreign_keys=ON');
 execFile(db, 'schema.sql');
 
 // Adapter so the app's async DB calls run against this sqlite instance.
@@ -102,22 +105,64 @@ await check('migrate20 is idempotent (second application is a no-op)', () => {
   assert.equal(count.n, 1, 'table not duplicated');
 });
 
-await check('foreign keys check clean after migrate20', () => {
+await check('foreign keys check clean right after migrate20', () => {
   const violations = db.prepare('PRAGMA foreign_key_check').all();
   assert.equal(violations.length, 0, `violations: ${JSON.stringify(violations)}`);
 });
 
-await check('recordLlmUsage insert works against the migrated schema', async () => {
+await check('recordLlmUsage insert works against the migrated schema (valid contact id)', async () => {
   const co = db.prepare("INSERT INTO companies(name,domain,created_at) VALUES('Co','co.example',date('now'))").run();
-  db.prepare("INSERT INTO contacts(company_id,name,email,status,created_at) VALUES(?,'Riley','riley@co.example','new',date('now'))").run(co.lastInsertRowid);
-  await recordLlmUsage(appDb(), { contactId: co.lastInsertRowid, provider: 'groq', model: 'openai/gpt-oss-20b', operation: 'copywriting_generate', status: '200', error: '', latencyMs: 10 });
-  const row = db.prepare('SELECT * FROM llm_usage_log WHERE contact_id=?').get(co.lastInsertRowid);
+  const ct = db.prepare("INSERT INTO contacts(company_id,name,email,status,created_at) VALUES(?,'Riley','riley@co.example','new',date('now'))").run(co.lastInsertRowid);
+  const contactId = ct.lastInsertRowid; // actual contacts.id, not companies.id
+  await recordLlmUsage(appDb(), { contactId, provider: 'groq', model: 'openai/gpt-oss-20b', operation: 'copywriting_generate', status: '200', error: '', latencyMs: 10 });
+  const row = db.prepare('SELECT * FROM llm_usage_log WHERE contact_id=?').get(contactId);
   assert.ok(row, 'usage row persisted');
   assert.equal(row.provider, 'groq');
   assert.equal(row.operation, 'copywriting_generate');
   assert.equal(row.status, '200');
   assert.equal(row.latency_ms, 10);
   assert.ok(Number(row.id) > 0);
+});
+
+await check('recordLlmUsage without a contact id stores NULL (no silent FK drop)', async () => {
+  const before = Number(db.prepare('SELECT COUNT(*) AS n FROM llm_usage_log').get().n);
+  await recordLlmUsage(appDb(), { provider: 'groq', model: 'openai/gpt-oss-20b', operation: 'orchestrator_generate', status: '200', error: '', latencyMs: 5 });
+  const rows = db.prepare('SELECT * FROM llm_usage_log WHERE contact_id IS NULL').all();
+  assert.equal(rows.length, 1, 'exactly one NULL-contact row stored');
+  assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM llm_usage_log').get().n), before + 1, 'row was persisted, not dropped');
+  assert.equal(rows[0].provider, 'groq');
+  assert.equal(rows[0].operation, 'orchestrator_generate');
+});
+
+await check('recordLlmUsage normalizes zero/invalid contact ids to NULL', async () => {
+  await recordLlmUsage(appDb(), { contactId: 0, provider: 'groq', model: 'm', operation: 'op', status: '200' });
+  await recordLlmUsage(appDb(), { contactId: 'not-a-number', provider: 'groq', model: 'm', operation: 'op', status: '200' });
+  await recordLlmUsage(appDb(), { contactId: -3, provider: 'groq', model: 'm', operation: 'op', status: '200' });
+  const cnt = Number(db.prepare("SELECT COUNT(*) AS n FROM llm_usage_log WHERE contact_id IS NULL AND operation='op'").get().n);
+  assert.equal(cnt, 3, 'zero, invalid, and negative ids all normalized to NULL');
+});
+
+await check('llm_usage_log.contact_id is nullable with ON DELETE SET NULL FK', () => {
+  const cols = db.prepare('PRAGMA table_info(llm_usage_log)').all();
+  const cid = cols.find((c) => c.name === 'contact_id');
+  assert.ok(cid, 'contact_id column exists');
+  assert.equal(Number(cid.notnull), 0, 'contact_id is nullable (NOT NULL removed)');
+  assert.equal(cid.dflt_value, null, 'contact_id has no DEFAULT');
+  const fk = db.prepare('PRAGMA foreign_key_list(llm_usage_log)').all();
+  const fkc = fk.find((f) => f.from === 'contact_id');
+  assert.ok(fkc, 'contact_id has a foreign key');
+  assert.equal(fkc.on_delete, 'SET NULL', 'FK is ON DELETE SET NULL');
+});
+
+await check('foreign-key enforcement rejects a non-existent contact id', () => {
+  assert.throws(() => {
+    db.prepare("INSERT INTO llm_usage_log(contact_id,provider,operation,status) VALUES(999999,'groq','op','200')").run();
+  }, /FOREIGN KEY|constraint/i, 'FK enforcement active and rejects bad contact_id');
+});
+
+await check('foreign keys check clean after migrate20', () => {
+  const violations = db.prepare('PRAGMA foreign_key_check').all();
+  assert.equal(violations.length, 0, `violations: ${JSON.stringify(violations)}`);
 });
 
 await check('llmCooldownStore reads/writes provider_usage cooldown rows', async () => {

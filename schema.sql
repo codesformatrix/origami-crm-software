@@ -414,7 +414,7 @@ CREATE TABLE IF NOT EXISTS provider_usage (
 
 CREATE TABLE IF NOT EXISTS llm_usage_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  contact_id INTEGER NOT NULL DEFAULT 0,
+  contact_id INTEGER,
   provider TEXT NOT NULL DEFAULT 'unknown',
   model TEXT NOT NULL DEFAULT '',
   operation TEXT NOT NULL DEFAULT 'llm',
@@ -422,7 +422,7 @@ CREATE TABLE IF NOT EXISTS llm_usage_log (
   error TEXT NOT NULL DEFAULT '',
   latency_ms INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY(contact_id) REFERENCES contacts(id) ON DELETE CASCADE
+  FOREIGN KEY(contact_id) REFERENCES contacts(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_contact ON llm_usage_log(contact_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_provider ON llm_usage_log(provider, created_at);

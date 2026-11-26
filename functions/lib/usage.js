@@ -13,6 +13,19 @@ const COOLDOWN_WINDOW = 'cooldown';
 const COOLDOWN_KEY = 'active';
 
 /**
+ * Normalize a contact id for the usage ledger.
+ *
+ * llm_usage_log.contact_id is nullable and references contacts(id) ON DELETE
+ * SET NULL, so a usage record must never carry a non-existent id. Missing,
+ * zero, negative, or non-integer values collapse to NULL (a global/system
+ * record); valid positive integers are preserved.
+ */
+const normalizeContactId = (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+/**
  * DB-backed provider cooldown store compatible with the cooldown hook
  * consumed by llm.js generateWithFallback({ cooldown }).
  *
@@ -60,6 +73,11 @@ export function llmCooldownStore(DB) {
  * break the generation pipeline (mirrors logStep's fail-safe contract).
  *
  * Expected record: { contactId, provider, model, operation, status, error, latencyMs }
+ *
+ * A missing, zero, or invalid contactId is stored as NULL (the column is
+ * nullable, FK ... ON DELETE SET NULL), so usage records for prospects that
+ * have no valid contact id still persist instead of failing the FK and being
+ * silently dropped.
  */
 export async function recordLlmUsage(DB, record) {
   try {
@@ -67,7 +85,7 @@ export async function recordLlmUsage(DB, record) {
       `INSERT INTO llm_usage_log(contact_id,provider,model,operation,status,error,latency_ms,created_at)
        VALUES(?,?,?,?,?,?,?,?)`
     ).bind(
-      Number(record.contactId) || 0,
+      normalizeContactId(record.contactId),
       String(record.provider || 'unknown').slice(0, 60),
       String(record.model || '').slice(0, 120),
       String(record.operation || 'llm').slice(0, 60),
