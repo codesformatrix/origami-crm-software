@@ -1,0 +1,24 @@
+# Copy to .dev.vars for local development, set only keys you actually have, and keep .dev.vars private.
+# APP_KEY is required for the signed CRM login session.
+APP_KEY="replace-with-a-long-random-secret"
+
+# Optional API integrations. Never commit real values or paste them into chat.
+GROQ_API_KEY=""
+GROQ_MODEL="openai/gpt-oss-120b"
+GEMINI_API_KEY=""
+GEMINI_MODEL="gemini-2.5-flash"
+OPENROUTER_API_KEY=""
+OPENROUTER_MODEL=""
+TAVILY_API_KEY=""
+SERPER_API_KEY=""
+HUNTER_API_KEY=""
+APOLLO_API_KEY=""
+FIRECRAWL_API_KEY=""
+# Public app origin used to create working unsubscribe URLs in generated drafts.
+PUBLIC_APP_URL="http://localhost:8788"
+
+# Gmail OAuth server credentials. The refresh token is requested and AES-GCM encrypted in D1.
+# Generate a unique 32+ character GMAIL_TOKEN_ENCRYPTION_KEY and keep it as a secret.
+GOOGLE_OAUTH_CLIENT_ID=""
+GOOGLE_OAUTH_CLIENT_SECRET=""
+GMAIL_TOKEN_ENCRYPTION_KEY="replace-with-a-unique-random-32-character-secret"

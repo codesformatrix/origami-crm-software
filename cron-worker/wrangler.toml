@@ -1,0 +1,7 @@
+name = "origami-cron-trigger"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Cron Trigger: fires every 10 minutes (UTC)
+[triggers]
+cron = ["*/10 * * * *"]

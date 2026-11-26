@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.log
+crm-backup*.json
+
+google_drive/*.zip

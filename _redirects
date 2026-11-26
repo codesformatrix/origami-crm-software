@@ -1,0 +1,7 @@
+# Block access to sensitive files by redirecting to a non-existent path (404)
+# 403 is rejected by wrangler; 301 to a missing path returns 404
+/.dev.vars /no-such-file 301
+/.env /no-such-file 301
+/.wrangler /no-such-file 301
+/.git /no-such-file 301
+/package-lock.json /no-such-file 301
