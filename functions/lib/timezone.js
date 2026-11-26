@@ -5,6 +5,7 @@
 // writer local context awareness.
 import { detectLocation } from './engine.js';
 import { generateWithFallback } from './llm.js';
+import { llmCooldownStore, llmAttemptRecorder } from './usage.js';
 
 const MAX_HOURLY = 10;
 
@@ -93,7 +94,7 @@ async function inferWithLLM(env, DB, contact, company, researchText) {
     `company_domain: ${company.domain || ''}`,
     `research_text: ${researchText || ''}`,
   ].filter((x) => !String(x).endsWith(': ')).join('\n');
-  const result = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: signals }], { maxTokens: 300, temperature: 0.1 });
+  const result = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: signals }], { maxTokens: 300, temperature: 0.1, cooldown: llmCooldownStore(DB), onAttempt: llmAttemptRecorder(DB, { contactId: contact?.id || 0, operation: 'timezone_infer' }) });
   const parsed = parseJsonObject(result.text);
   if (!parsed) return null;
   return { city: String(parsed.city || '').trim(), country: String(parsed.country || '').trim(), timezone: validZone(parsed.timezone), confidence: String(parsed.confidence || 'medium').toLowerCase() };

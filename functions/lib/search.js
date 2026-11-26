@@ -3,6 +3,7 @@
 // Each search returns structured results: title, url, content snippet.
 
 import { generateWithFallback } from './llm.js';
+import { mapSourceApiToEvidence } from './evidence.js';
 
 /**
  * Run a real web search using Tavily or Serper.
@@ -78,6 +79,9 @@ export async function deepResearch(env, companyName, companyDomain, prospectName
     sources,
     facts,
     source_api: search.source,
+    // Explicit evidence provenance: 'search_api' when real search APIs
+    // produced the results, 'llm_inference' when the LLM fallback did.
+    evidence_type: mapSourceApiToEvidence(search.source),
     note: search.note,
   };
 }

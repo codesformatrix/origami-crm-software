@@ -92,7 +92,10 @@ globalThis.fetch = async (input, options = {}) => {
   assert.equal(saved.email, 'riley@northstar.example');
   assert.equal(saved.email_discovery_status, 'found');
   const note = await DB.prepare('SELECT * FROM research_notes WHERE contact_id=?').bind(f.contactId).first();
-  assert.equal(note.source_type, 'research_synthesis');
+  // Evidence provenance: this scenario used real Firecrawl scrape + Tavily
+  // search, so the synthesis note is persisted with the strongest verified
+  // evidence type instead of the legacy generic label.
+  assert.equal(note.source_type, 'search_api');
   assert.equal(note.icp_score, 84);
   assert.equal(JSON.parse(note.pain_points).length, 2);
   assert.equal(JSON.parse(note.talking_points).length, 2);

@@ -1,4 +1,6 @@
 import { generateWithFallback } from './llm.js';
+import { EVIDENCE, isVerifiedEvidence, strongestEvidence } from './evidence.js';
+import { llmCooldownStore, llmAttemptRecorder } from './usage.js';
 import { enqueueCopywritingJob } from './copywriting.js';
 import { logStep } from './steplog.js';
 
@@ -259,14 +261,14 @@ function normalizeList(value, fallback) {
 }
 // Fill empty company fields from the scraped public research. Only fields
 // that are currently empty get written, so uploaded data always wins.
-async function fillCompanyFields(env, DB, company, sourceText) {
+async function fillCompanyFields(env, DB, company, sourceText, contactId = 0) {
   const EMPTY_FIELDS = ['what_they_do', 'recent_news', 'city', 'country', 'live_product', 'founders', 'technical_lead'];
   const empty = EMPTY_FIELDS.filter((f) => !String(company[f] || '').trim());
   if (!empty.length) return;
   const system = 'You are a precise company data extraction assistant. From the supplied public web text, extract the company details. Use only evidence present in the text; if a fact is not present, return an empty string for it. Return JSON only with keys: what_they_do, recent_news, city, country, live_product, founders, technical_lead. For live_product and technical_lead, return "yes" or "no" when the text states it clearly, otherwise return an empty string.';
   const user = `COMPANY: ${company.name}; domain: ${company.domain || ''}\nPUBLIC SOURCE MATERIAL:\n${String(sourceText).slice(0, 12000)}`;
   try {
-    const result = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: user }], { maxTokens: 600, temperature: 0.1 });
+    const result = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: user }], { maxTokens: 600, temperature: 0.1, cooldown: llmCooldownStore(DB), onAttempt: llmAttemptRecorder(DB, { contactId, operation: 'enrichment_fill_fields' }) });
     const parsed = parseObject(result.text);
     const updates = {};
     for (const f of empty) {
@@ -287,6 +289,7 @@ async function synthesize(env, DB, contact, company, sources, sourceKind = 'rese
   const user = `PROSPECT: ${contact.name}; title: ${contact.title || 'unknown'}; company: ${company.name}; company size: ${company.employees || 'unknown'}; company description: ${company.what_they_do || ''}; domain: ${company.domain || ''}\nSOURCE TYPE: ${sourceKind}\nPUBLIC SOURCE MATERIAL (may be empty):\n${String(sources || '').slice(0, 14000)}`;
   const result = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: user }], {
     maxTokens: 900, temperature: 0.15, reserve: (provider) => reserveQuota(DB, provider),
+    cooldown: llmCooldownStore(DB), onAttempt: llmAttemptRecorder(DB, { contactId: contact?.id || 0, operation: 'enrichment_synthesis' }),
   });
   const parsed = parseObject(result.text);
   const score = Math.max(0, Math.min(100, Math.round(Number(parsed.icp_score) || 0)));
@@ -299,9 +302,15 @@ async function synthesize(env, DB, contact, company, sources, sourceKind = 'rese
     provider: result.provider,
   };
 }
-async function saveNote(DB, id, sourceType, sourceUrl, result, env = {}) {
+async function saveNote(DB, id, sourceType, sourceUrl, result, env = {}, evidence = null) {
+  // Evidence override: callers pass the provenance of the actual sources used.
+  // llm_inference notes are explicitly marked unverified at persist time.
+  const noteType = evidence || sourceType;
+  const summary = evidence === EVIDENCE.LLM_INFERENCE && !String(result.summary || '').includes('UNVERIFIED')
+    ? `${result.summary}\n[UNVERIFIED: AI-inferred evidence — do not cite as fact]`
+    : result.summary;
   await DB.prepare(`INSERT INTO research_notes(contact_id,source_type,source_url,summary,pain_points,talking_points,icp_score,icp_reason,fetched_at)
-    VALUES(?,?,?,?,?,?,?,?,?)`).bind(id, sourceType, sourceUrl || '', result.summary, JSON.stringify(result.pain_points), JSON.stringify(result.talking_points), result.icp_score, result.icp_reason, utc()).run();
+    VALUES(?,?,?,?,?,?,?,?,?)`).bind(id, noteType, sourceUrl || '', summary, JSON.stringify(result.pain_points), JSON.stringify(result.talking_points), result.icp_score, result.icp_reason, utc()).run();
   await DB.prepare('UPDATE contacts SET email_discovery_status=CASE WHEN email<>\'\' THEN \'found\' ELSE email_discovery_status END WHERE id=?').bind(id).run();
   await enqueueCopywritingJob(DB, id, env.PUBLIC_APP_URL || '');
 }
@@ -325,7 +334,7 @@ async function llmWebSearch(env, DB, contact, company) {
     const result = await generateWithFallback(env, [
       { role: 'system', content: system },
       { role: 'user', content: user },
-    ], { maxTokens: 600, temperature: 0.2, reserve: (provider) => reserveQuota(DB, provider) });
+    ], { maxTokens: 600, temperature: 0.2, reserve: (provider) => reserveQuota(DB, provider), cooldown: llmCooldownStore(DB), onAttempt: llmAttemptRecorder(DB, { contactId: contact?.id || 0, operation: 'enrichment_llm_search' }) });
     const clean = String(result.text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     let parsed;
     try { parsed = JSON.parse(clean); } catch {
@@ -375,12 +384,18 @@ export async function runEnrichmentBatch(env, maxJobs = MAX_HOURLY, onlyContactI
       const web = await firecrawlPages(env, DB, company);
       await progress(DB, contact.id, 'enriching', 'search', 58, 'Searching public news and prospect appearances');
       const search = await publicSearches(env, DB, company, contact);
+      // Track evidence provenance for the synthesis note: which kinds of
+      // evidence actually contributed to the source text.
+      const evidenceParts = [];
+      if (web.text) evidenceParts.push(EVIDENCE.WEBSITE_SCRAPE);
+      if (search.text) evidenceParts.push(EVIDENCE.SEARCH_API);
       // Fallback: use existing company data fields as source text when no
       // external providers are configured. The uploaded data is already enriched.
       const companyDataText = [
         company.what_they_do, company.recent_news, company.sub_niche,
         company.founders, company.live_product, company.technical_lead,
       ].filter(Boolean).join('\n');
+      if (companyDataText) evidenceParts.push(EVIDENCE.USER_PROVIDED);
       let sourceText = [web.text, search.text, companyDataText].filter(Boolean).join('\n\n');
       // If still empty, do an LLM-based web search for fresh info about the company
       if (!sourceText.trim()) {
@@ -388,16 +403,25 @@ export async function runEnrichmentBatch(env, maxJobs = MAX_HOURLY, onlyContactI
         try {
           const llmSearch = await llmWebSearch(env, DB, contact, company);
           sourceText = llmSearch.text || '';
+          if (sourceText.trim()) evidenceParts.push(EVIDENCE.LLM_INFERENCE);
         } catch { sourceText = ''; }
       }
       // If still empty, use company name and domain as minimal context
       if (!sourceText.trim()) {
         sourceText = `Company: ${company.name}\nDomain: ${company.domain || ''}\nNiche: ${company.sub_niche || ''}\nDescription: ${company.what_they_do || 'No description available.'}`;
+        if (!evidenceParts.length) evidenceParts.push(EVIDENCE.USER_PROVIDED);
       }
-      await fillCompanyFields(env, DB, company, sourceText);
+      await fillCompanyFields(env, DB, company, sourceText, contact.id);
       await progress(DB, contact.id, 'enriching', 'synthesis', 82, 'Synthesizing evidence and ICP fit');
       const note = await synthesize(env, DB, contact, company, sourceText);
-      await saveNote(DB, contact.id, 'research_synthesis', web.urls[0] || search.urls[0] || '', note, env);
+      const evidenceType = strongestEvidence(...evidenceParts);
+      if (evidenceParts.includes(EVIDENCE.LLM_INFERENCE)) {
+        const marker = isVerifiedEvidence(evidenceType)
+          ? '\n[PARTLY UNVERIFIED: includes AI-inferred content — verify before citing]'
+          : '\n[UNVERIFIED: AI-inferred evidence — do not cite as fact]';
+        note.summary = `${note.summary}${marker}`;
+      }
+      await saveNote(DB, contact.id, 'research_synthesis', web.urls[0] || search.urls[0] || '', note, env, evidenceType);
       await progress(DB, contact.id, 'completed', 'complete', 100, 'Enrichment complete; review the research note', '');
       await logStep(DB, contact.id, 0, 'completed', 'Enrichment completed. Research note saved.', '', 'enrichment');
       results.push({ contact_id: contact.id, status: 'completed', icp_score: note.icp_score });

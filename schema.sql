@@ -412,6 +412,21 @@ CREATE TABLE IF NOT EXISTS provider_usage (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(provider, window_type, window_key)
 );
 
+CREATE TABLE IF NOT EXISTS llm_usage_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contact_id INTEGER NOT NULL DEFAULT 0,
+  provider TEXT NOT NULL DEFAULT 'unknown',
+  model TEXT NOT NULL DEFAULT '',
+  operation TEXT NOT NULL DEFAULT 'llm',
+  status TEXT NOT NULL DEFAULT 'unknown',
+  error TEXT NOT NULL DEFAULT '',
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY(contact_id) REFERENCES contacts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_contact ON llm_usage_log(contact_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_provider ON llm_usage_log(provider, created_at);
+
 CREATE TABLE IF NOT EXISTS replies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email_id INTEGER,
@@ -453,4 +468,5 @@ INSERT OR IGNORE INTO settings(key,value) VALUES
   ('serper_daily_cap','100'),('serper_lifetime_cap','2500'),('groq_daily_cap','50'),('gemini_daily_cap','10'),
   ('openrouter_daily_cap','20'),('copywriting_hourly_cap','10'),('daily_send_cap','25'),('gmail_step2_business_days','3'),('gmail_step3_business_days','4'),('gmail_step4_business_days','5'),('icp_authority','Founder, CEO, CTO, VP/Director of Engineering or Product, or another budget-owning decision maker'),
   ('icp_company_size_min','10'),('icp_company_size_max','500'),
-  ('icp_technology_fit','Technology and services fit: software/product engineering, modernization, cloud, AI/data, or delivery capacity needs that Origami Consulting can address');
+  ('icp_technology_fit','Technology and services fit: software/product engineering, modernization, cloud, AI/data, or delivery capacity needs that Origami Consulting can address'),
+  ('research_reuse_hours','48');

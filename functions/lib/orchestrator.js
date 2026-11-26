@@ -15,6 +15,8 @@ import { deepResearch } from './search.js';
 import { generateWithFallback } from './llm.js';
 import { windowStatus, zonedToUtc, nextWorkingDay, addDays } from './engine.js';
 import { isEmailSuppressed } from './compliance.js';
+import { mapSourceApiToEvidence, isVerifiedEvidence, evidenceLabel, EVIDENCE_DISCIPLINE_RULE } from './evidence.js';
+import { llmCooldownStore, llmAttemptRecorder } from './usage.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 import { logStep, isGlobalPaused, isReviewMode } from './steplog.js';
@@ -184,13 +186,13 @@ function pickRandomSendTime(ws, tz, ctx, now) {
  * Generate a single email step with retry + model switching.
  * Retries up to MAX_RETRIES times, switching provider on each failure.
  */
-export async function generateWithRetry(env, DB, contactId, stepNumber, context) {
+export async function generateWithRetry(env, DB, contactId, stepNumber, context, options = {}) {
   let lastError = null;
   let rejectionReason = null;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await generateSingleStepInternal(env, context, stepNumber, attempt > 1, rejectionReason || undefined);
-      const scored = await scoreDraftInternal(env, [result], context);
+      const result = await generateSingleStepInternal(env, context, stepNumber, attempt > 1, rejectionReason || undefined, options);
+      const scored = await scoreDraftInternal(env, [result], context, options);
       const draft = scored[0];
 
       if (draft.scoring.score >= 70 && draft.scoring.constraints_valid) {
@@ -201,8 +203,8 @@ export async function generateWithRetry(env, DB, contactId, stepNumber, context)
       // Combine scoring critique with any rejection reason for the revision
       const critique = [draft.scoring.critique, rejectionReason].filter(Boolean).join(' ').trim() || draft.scoring.critique;
       if (attempt < MAX_RETRIES) {
-        const revised = await generateSingleStepInternal(env, context, stepNumber, true, critique);
-        const revisedScored = await scoreDraftInternal(env, [revised], context);
+        const revised = await generateSingleStepInternal(env, context, stepNumber, true, critique, options);
+        const revisedScored = await scoreDraftInternal(env, [revised], context, options);
         const revisedDraft = revisedScored[0];
         if (revisedDraft.scoring.score >= 70 && revisedDraft.scoring.constraints_valid) {
           return { draft: revisedDraft, score: revisedDraft.scoring.score, attempts: attempt + 1 };
@@ -224,7 +226,7 @@ export async function generateWithRetry(env, DB, contactId, stepNumber, context)
   throw lastError || new Error('All generation attempts failed');
 }
 
-async function generateSingleStepInternal(env, context, stepNumber, isRevision, critique = null) {
+async function generateSingleStepInternal(env, context, stepNumber, isRevision, critique = null, options = {}) {
   const stepRules = stepNumber === 1
     ? 'Touch 1: 60 to 110 words. Open with the prospect\'s first name, then one specific detail from the research. Tie it to a real problem they likely have. Ask one low-pressure question.'
     : stepNumber === 4
@@ -247,6 +249,8 @@ Hard rules:
 
 Apply the critique to the draft and fix the flagged issues. Keep the exact step number and length rules.
 
+${EVIDENCE_DISCIPLINE_RULE}
+
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`
     : `You are Ali, a freelance business development person who writes cold emails that actually get replies. Your writing sounds like a competent human sent it from their phone — short sentences, natural rhythm, zero corporate polish. You read the prospect's company before writing and reference something real from their world. The email should feel like it was written for this specific person, not templated.
 
@@ -267,6 +271,8 @@ Hard rules:
 - Subject line: lowercase, 2-5 words, curious but not clickbait.
 ' + stepRules + '
 
+' + EVIDENCE_DISCIPLINE_RULE + '
+
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`;
 
   const user = JSON.stringify({
@@ -279,7 +285,7 @@ Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook
   const result = await generateWithFallback(env, [
     { role: 'system', content: system },
     { role: 'user', content: user },
-  ], { maxTokens: 800, temperature: 0.35 });
+  ], { maxTokens: 800, temperature: 0.35, ...options });
 
   const parsed = jsonObject(result.text);
   let emails = Array.isArray(parsed.emails) ? parsed.emails : [];
@@ -331,7 +337,7 @@ function checkAutoReject(body, subject) {
   return null;
 }
 
-async function scoreDraftInternal(env, drafts, context) {
+async function scoreDraftInternal(env, drafts, context, options = {}) {
   const system = 'You are a strict, fair email copy editor. Score each draft from 0 to 100 on five dimensions. Return JSON only: {"scores":[{"step_number":1,"word_count":0,"personalization_depth":0,"cta_clarity":0,"subject_line_strength":0,"spam_safety":0,"critique":"specific changes"}]}. Use these dimensions: word_count means correct length for its step; personalization_depth means it cites supplied research accurately; cta_clarity means one clear interest check or 15 minute invitation; subject_line_strength means 2 to 5 lowercase relevant words; spam_safety is 100 when no spam triggers and 0 when many. Never reward invented facts. Critique must be brief, concrete, and kind. No links or footers should appear in the email body. A draft with any dash mark, bullet, banned buzzword (leverage, streamline, solutions, synergy), generic greeting, or unverifiable claim must score 0 on spam_safety and personalization_depth.';
   const user = JSON.stringify({
     prospect: context.prospect,
@@ -347,7 +353,7 @@ async function scoreDraftInternal(env, drafts, context) {
   const response = await generateWithFallback(env, [
     { role: 'system', content: system },
     { role: 'user', content: user },
-  ], { maxTokens: 400, temperature: 0.1 });
+  ], { maxTokens: 400, temperature: 0.1, ...options });
   const parsed = jsonObject(response.text);
   const scores = Array.isArray(parsed.scores) ? parsed.scores : [];
   return drafts.map((draft) => {
@@ -376,14 +382,22 @@ async function scoreDraftInternal(env, drafts, context) {
 
 export async function saveResearchSources(DB, contactId, research) {
   if (!research || !research.sources || research.sources.length === 0) return;
+  // Preserve provenance: the evidence type comes from the actual research
+  // source. LLM fallback results are stored as llm_inference and explicitly
+  // marked unverified so downstream generation cannot cite them as fact.
+  const evidenceType = mapSourceApiToEvidence(research.source_api);
+  const unverifiedMarker = !isVerifiedEvidence(evidenceType)
+    ? '\n[UNVERIFIED: AI-inferred evidence — do not cite as fact]'
+    : '';
   for (const src of research.sources) {
     await DB.prepare(`
       INSERT INTO research_notes(contact_id, source_type, source_url, summary, pain_points, talking_points, fetched_at)
-      VALUES(?, 'search_api', ?, ?, '[]', '[]', ?)
+      VALUES(?, ?, ?, ?, '[]', '[]', ?)
     `).bind(
       contactId,
+      evidenceType,
       src.url || '',
-      `Source: ${src.title || ''}\n${research.facts?.join('\n') || ''}`,
+      `Source: ${src.title || ''}\n${research.facts?.join('\n') || ''}${unverifiedMarker}`,
       nowIso()
     ).run();
   }
@@ -454,8 +468,14 @@ export async function runOutreachOrchestrator(env, DB, now = new Date()) {
 
       const context = buildOrchestratorContext(contact, company, research, profile, unsubscribeUrl, sentDrafts, replies);
 
-      // Step 4 + 5: Generate with retry (up to 3 times, model switching)
-      const genResult = await generateWithRetry(env, DB, contactId, stepNumber, context);
+      // Step 4 + 5: Generate with retry (up to 3 times, model switching).
+      // Provider cooldowns and per-attempt usage metrics are wired here;
+      // Gmail sending and its safeguards are untouched.
+      const llmOptions = {
+        cooldown: llmCooldownStore(DB),
+        onAttempt: llmAttemptRecorder(DB, { contactId, operation: 'orchestrator_generate' }),
+      };
+      const genResult = await generateWithRetry(env, DB, contactId, stepNumber, context, llmOptions);
 
       // Log: drafted
       await logStep(DB, contactId, stepNumber, 'drafted', `Email ${stepNumber} drafted. Score ${genResult.score}, attempts ${genResult.attempts}. Hook: ${genResult.draft.hook_used || 'n/a'}.`, '', 'orchestrator');
@@ -577,6 +597,9 @@ function buildOrchestratorContext(contact, company, research, sender, unsubscrib
       pain_points: pain,
       talking_points: talking,
       fresh_context: research.summary || '',
+      evidence_type: research.evidence_type || mapSourceApiToEvidence(research.source_api),
+      evidence_verified: isVerifiedEvidence(research.evidence_type || research.source_api),
+      evidence_label: evidenceLabel(research.evidence_type || research.source_api),
     },
     previous_emails: sentDrafts.map((d) => ({ step_number: Number(d.step_number), subject: d.subject, body: d.body })),
     previous_replies: replies.map((r) => ({ classification: r.classification || '', body: r.body || r.content || '', received_at: r.received_at || '' })),
@@ -597,7 +620,8 @@ function buildOrchestratorContext(contact, company, research, sender, unsubscrib
       signature: 'Use only the supplied sender name and company if signing. The mailing address is context only. Do not invent facts or claims.',
       location: 'If the prospect location is available, write with local context awareness: write as someone who knows their market and environment, and reference the location naturally when relevant. Never mention the timezone mechanically and never invent local facts.',
       unsubscribe: 'Do not include any links, unsubscribe footers, or URLs in the email body.',
-      fresh_context: 'Use the fresh_context field for the most recent information about the prospect and company. Incorporate recent news, developments, or context naturally into the email hook.',
+      fresh_context: 'Use the fresh_context field for the most recent information about the prospect and company. Incorporate recent news, developments, or context naturally into the email hook — only when that information is backed by verified evidence.',
+      evidence_discipline: EVIDENCE_DISCIPLINE_RULE,
       icp: {
         authority: sender.icp_authority || '',
         company_size: `${sender.icp_company_size_min || '10'} to ${sender.icp_company_size_max || '500'}`,

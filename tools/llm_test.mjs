@@ -26,7 +26,7 @@ try {
   const result = await generateWithFallback(env, [{ role: 'user', content: 'test' }], { maxTokens: 12 });
   assert.equal(result.provider, 'gemini');
   assert.equal(result.text, 'Gemini fallback response');
-  assert.equal(groqCalls, 3, '429 should back off and retry exponentially before falling through');
+  assert.equal(groqCalls, 2, '429 should receive exactly one bounded retry before falling through');
   assert.equal(geminiCalls, 1);
   assert.equal(routerCalls, 0);
   assert.deepEqual(configuredProviders(env).map((p) => p.name), ['groq', 'gemini', 'openrouter']);
@@ -37,7 +37,7 @@ try {
   assert.equal(fallback.text, 'OpenRouter response');
 
   await assert.rejects(() => generateWithFallback({}, [{ role: 'user', content: 'test' }]), (error) => error.code === 'NO_PROVIDER');
-  console.log('PASS LLM provider order, server-only keys, 429 exponential retries, fallback parsing, and no-provider fail-closed behavior');
+  console.log('PASS LLM provider order, server-only keys, bounded 429 retry, fallback parsing, and no-provider fail-closed behavior');
 } finally {
   globalThis.fetch = originalFetch;
 }

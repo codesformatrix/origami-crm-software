@@ -1,6 +1,8 @@
 import { generateWithFallback } from './llm.js';
 import { isEmailSuppressed } from './compliance.js';
 import { logStep } from './steplog.js';
+import { isVerifiedEvidence, evidenceLabel, mapSourceApiToEvidence, EVIDENCE_DISCIPLINE_RULE, loadRecentVerifiedNotes } from './evidence.js';
+import { llmCooldownStore, llmAttemptRecorder } from './usage.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_HOURLY = 10; // 10 jobs per hour — circuit breaker in generateWithFallback limits subrequests per call
@@ -118,11 +120,12 @@ function normalizeScore(score, draft, unsubscribeUrl, research = {}) {
   const critique = [String(raw.critique || '').trim(), ...constraints.issues].filter(Boolean).join(' ').slice(0, 1200);
   return { score: final, breakdown: { ...dims, constraints_valid: constraints.valid, issues: constraints.issues }, critique, word_count: constraints.word_count, constraints_valid: constraints.valid };
 }
-async function scoreDrafts(env, DB, drafts, context) {
+async function scoreDrafts(env, DB, drafts, context, options = {}) {
   const system = `You are a strict, fair email copy editor. Score each draft from 0 to 100 on five dimensions. Return JSON only: {"scores":[{"step_number":1,"word_count":0,"personalization_depth":0,"cta_clarity":0,"subject_line_strength":0,"spam_safety":0,"critique":"specific changes"}]}. Use these dimensions: word_count means correct length for its step (touch 1 is 60 to 110 words, follow ups shorter); personalization_depth means it cites supplied research accurately and opens with a specific detail; cta_clarity means one clear interest check or 15 minute invitation; subject_line_strength means 2 to 5 lowercase relevant words; spam_safety is 100 when no spam triggers and 0 when many. Never reward invented facts. Critique must be brief, concrete, and kind. No links or footers should appear in the email body. A draft with any dash mark, bullet, banned buzzword (leverage, streamline, solutions, synergy), generic greeting, or unverifiable claim must score 0 on spam_safety and personalization_depth.`;
   const user = JSON.stringify({ prospect: context.prospect, research: context.research, drafts: drafts.map((d) => ({ step_number: d.step_number, subject: d.subject, body: d.body, target_length: d.step_number === 1 ? 'under 120 words' : '20 to 60 words', breakup: d.step_number === 4 })) });
   const response = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: user }], {
     maxTokens: 1200, temperature: 0.1, reserve: (provider) => providerReserve(DB, provider),
+    ...options,
   });
   const parsed = jsonObject(response.text);
   const rows = Array.isArray(parsed.scores) ? parsed.scores : [];
@@ -158,8 +161,22 @@ async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
   const settings = (await DB.prepare("SELECT key,value FROM settings WHERE key IN ('sender_name','sender_company','physical_mailing_address','icp_authority','icp_company_size_min','icp_company_size_max','icp_technology_fit')").all()).results || [];
   const profile = Object.fromEntries(settings.map((x) => [x.key, x.value]));
 
-  // AI web search for latest context about company and prospect
-  const searchResults = await aiWebSearch(env, DB, contact, company || {});
+  // Reuse recent verified research instead of searching again on every
+  // scheduled refresh. Only fall back to AI search when no verified
+  // evidence exists within the reuse window.
+  const reuseHours = Number(profile.research_reuse_hours) > 0 ? Number(profile.research_reuse_hours) : 48;
+  const reusable = await loadRecentVerifiedNotes(DB, contactId, reuseHours);
+  let searchResults;
+  if (reusable.length) {
+    searchResults = {
+      text: reusable.slice(0, 3).map((n) => `[${n.source_type}] ${n.summary || ''}`).filter(Boolean).join('\n\n'),
+      urls: reusable.map((n) => n.source_url || '').filter(Boolean),
+      facts: [],
+      note: `Reused ${reusable.length} recent verified research note(s); skipped repeated search`,
+    };
+  } else {
+    searchResults = await aiWebSearch(env, DB, contact, company || {});
+  }
 
   // Build research object from latest note, or synthesize from company fields
   let research;
@@ -170,15 +187,20 @@ async function gatherFreshContext(env, DB, contactId, unsubscribeUrl) {
       talking_points: parseList(latestNote.talking_points),
       icp_score: latestNote.icp_score,
       icp_reason: latestNote.icp_reason || '',
+      evidence_type: mapSourceApiToEvidence(latestNote.source_type),
+      evidence_verified: isVerifiedEvidence(mapSourceApiToEvidence(latestNote.source_type)),
     };
   } else {
-    // No research note — use company context fields as fallback
+    // No research note — use company context fields as fallback.
+    // Uploaded CRM data is user-provided evidence, not verified web research.
     research = {
       summary: [company?.description, company?.recent_news, company?.what_they_do].filter(Boolean).join(' '),
       pain_points: [],
       talking_points: [company?.description, company?.recent_news].filter(Boolean),
       icp_score: null,
       icp_reason: '',
+      evidence_type: 'user_provided',
+      evidence_verified: true,
     };
   }
 
@@ -234,7 +256,7 @@ async function aiWebSearch(env, DB, contact, company) {
     const response = await generateWithFallback(env, [
       { role: 'system', content: system },
       { role: 'user', content: user },
-    ], { maxTokens: 600, temperature: 0.2, reserve: (provider) => providerReserve(DB, provider) });
+    ], { maxTokens: 600, temperature: 0.2, reserve: (provider) => providerReserve(DB, provider), cooldown: llmCooldownStore(DB), onAttempt: llmAttemptRecorder(DB, { contactId: contact?.id || 0, operation: 'copywriting_search' }) });
     const parsed = jsonObject(response.text);
     return {
       text: parsed.summary || parsed.facts?.join('\n') || '',
@@ -275,6 +297,9 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
       summary: research.summary || '', pain_points: pain, talking_points: talking,
       icp_score: research.icp_score, icp_reason: research.icp_reason || '',
       fresh_context: freshContext || '',
+      evidence_type: research.evidence_type || '',
+      evidence_verified: research.evidence_verified !== false,
+      evidence_label: evidenceLabel(research.evidence_type),
     },
     previous_emails: sentDrafts.map((d) => ({ step_number: Number(d.step_number), subject: d.subject, body: d.body })),
     previous_replies: replies.map((r) => ({ classification: r.classification || '', body: r.body || r.content || '', received_at: r.received_at || '' })),
@@ -291,7 +316,8 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
       signature: 'Use only the supplied sender name and company if signing. The mailing address is context only. Do not invent facts or claims.',
       location: 'If the prospect location is available, write with local context awareness: write as someone who knows their market and environment, and reference the location naturally when relevant. Never mention the timezone mechanically and never invent local facts.',
       unsubscribe: 'Do not include any links, unsubscribe footers, or URLs in the email body.',
-      fresh_context: 'Use the fresh_context field for the most recent information about the prospect and company. Incorporate recent news, developments, or context naturally into the email hook.',
+      fresh_context: 'Use the fresh_context field for the most recent information about the prospect and company. Incorporate recent news, developments, or context naturally into the email hook — only when that information is backed by verified evidence.',
+      evidence_discipline: EVIDENCE_DISCIPLINE_RULE,
       icp: { authority: icp.authority || '', company_size: `${icp.min_size || '10'} to ${icp.max_size || '500'}`, technology_services_fit: icp.technology_fit || '' },
     },
   };
@@ -299,7 +325,7 @@ function buildUserContext(contact, company, research, sender, icp, unsubscribeUr
 
 // ---- Per-email on-demand generation ----
 // Generates a SINGLE email step with fresh context. This is the new core function.
-async function generateSingleStep(env, DB, context, stepNumber, critique = null) {
+async function generateSingleStep(env, DB, context, stepNumber, critique = null, options = {}) {
   const isRevision = Boolean(critique);
   const stepRules = stepNumber === 1
     ? 'Touch 1: 60 to 110 words. Open with the prospect\'s first name, then one specific detail from the research. Tie it to a real problem they likely have. Ask one low-pressure question.'
@@ -322,6 +348,8 @@ Hard rules:
 
 Apply the critique to the draft and fix the flagged issues. Keep the exact step number and length rules.
 
+${EVIDENCE_DISCIPLINE_RULE}
+
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`
     : `You are Ali, a freelance business development person who writes cold emails that actually get replies. Your writing sounds like a competent human sent it from their phone — short sentences, natural rhythm, zero corporate polish. You read the prospect's company before writing and reference something real from their world. The email should feel like it was written for this specific person, not templated.
 
@@ -342,6 +370,8 @@ Hard rules:
 - Subject line: lowercase, 2-5 words, curious but not clickbait.
 ' + stepRules + '
 
+' + EVIDENCE_DISCIPLINE_RULE + '
+
 Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook_used":"...","sources":["url1"]}]}. No markdown fences.`;
   const user = JSON.stringify({
     context,
@@ -351,6 +381,7 @@ Return JSON only: {"emails":[{"step_number":N,"subject":"...","body":"...","hook
   });
   const result = await generateWithFallback(env, [{ role: 'system', content: system }, { role: 'user', content: user }], {
     maxTokens: 800, temperature: 0.35, reserve: (provider) => providerReserve(DB, provider),
+    ...options,
   });
   const parsed = jsonObject(result.text);
   let emails = Array.isArray(parsed.emails) ? parsed.emails : [];
@@ -467,8 +498,13 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
   }
   if (!unsubscribeUrl) throw new Error('PUBLIC_APP_URL is required for tracking tokens');
 
-  // Gather fresh context (includes AI web search)
+  // Gather fresh context (reuses recent verified research where possible)
   const data = await gatherFreshContext(env, DB, contactId, unsubscribeUrl);
+
+  // Provider cooldowns and per-attempt usage metrics for this prospect.
+  const cooldownStore = llmCooldownStore(DB);
+  const llmOptions = { cooldown: cooldownStore, onAttempt: llmAttemptRecorder(DB, { contactId, operation: 'copywriting_generate' }) };
+  const scoreOptions = { cooldown: cooldownStore, onAttempt: llmAttemptRecorder(DB, { contactId, operation: 'copywriting_score' }) };
 
   // Generate the single email
   await DB.prepare("UPDATE copywriting_jobs SET status='generating',stage='generating',progress=10,detail=?,error='',started_at=?,updated_at=? WHERE contact_id=?").bind(`Generating email ${stepNumber} with fresh context`, nowIso(), nowIso(), contactId).run();
@@ -482,8 +518,8 @@ export async function generateStepOnDemand(env, DB, contactId, stepNumber) {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const generated = await generateSingleStep(env, DB, data.context, stepNumber, attempt > 1 ? ([draft?.scoring?.critique, rejectionReason].filter(Boolean).join(' ').trim() || draft?.scoring?.critique) : undefined);
-        draft = (await scoreDrafts(env, DB, [generated], { prospect: data.context.prospect, research: data.context.research }))[0];
+        const generated = await generateSingleStep(env, DB, data.context, stepNumber, attempt > 1 ? ([draft?.scoring?.critique, rejectionReason].filter(Boolean).join(' ').trim() || draft?.scoring?.critique) : undefined, llmOptions);
+        draft = (await scoreDrafts(env, DB, [generated], { prospect: data.context.prospect, research: data.context.research }, scoreOptions))[0];
 
         if (draft.scoring.score >= 50 && draft.scoring.constraints_valid) {
           break;
@@ -671,7 +707,7 @@ export async function scoreEditedDraft(env, DB, draftId, subject, body) {
     ? normalizeSubject(subject, 1, row.context.prospect.company)
     : (first?.subject || normalizeSubject(subject, draft.step_number, row.context.prospect.company));
   const editedDraft = { step_number: Number(draft.step_number), subject: threadSubject, body: sanitizeBody(body, draft.unsubscribe_url, false), unsubscribe_url: draft.unsubscribe_url };
-  const scored = (await scoreDrafts(env, DB, [editedDraft], { prospect: row.context.prospect, research: row.context.research }))[0];
+  const scored = (await scoreDrafts(env, DB, [editedDraft], { prospect: row.context.prospect, research: row.context.research }, { cooldown: llmCooldownStore(DB), onAttempt: llmAttemptRecorder(DB, { contactId: draft.contact_id, operation: 'copywriting_score_edit' }) }))[0];
   await DB.prepare("UPDATE email_drafts SET subject=?,body=?,personalization_score=?,score_breakdown=?,score_critique=?,word_count=?,constraints_valid=?,is_user_edited=1,edited_at=? WHERE id=?").bind(
     scored.subject, scored.body, scored.scoring.score, JSON.stringify(scored.scoring.breakdown), scored.scoring.critique, scored.scoring.word_count, scored.scoring.constraints_valid ? 1 : 0, nowIso(), draftId).run();
   const updated = await DB.prepare('SELECT * FROM email_drafts WHERE id=?').bind(draftId).first();
